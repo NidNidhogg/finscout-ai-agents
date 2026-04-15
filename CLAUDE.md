@@ -1,49 +1,41 @@
-# CLAUDE.md — [PROJECT NAME]
+# CLAUDE.md — finscout-ai-agents
 # Inherits: ~/.claude/CLAUDE.md (iDECP Global Orchestrator Protocol)
 
 ## Execution Environment
 
-- Language:        <!-- e.g., Rust 1.78, TypeScript 5.4, Python 3.12, Solidity 0.8.24 -->
-- Runtime:         <!-- e.g., tokio, Node.js 22, EVM, CPython -->
-- Package Manager: <!-- e.g., cargo, pnpm, pip, forge -->
+- Language:        TypeScript 5.x
+- Runtime:         Node.js 20
+- Package Manager: npm
 
 ## Testing Conventions
 
-- Framework:       <!-- e.g., cargo test, vitest, pytest, forge test -->
-- Test location:   <!-- e.g., tests/, src/**/*.test.ts, test/ -->
-- Run all:         <!-- exact command: e.g., pytest tests/ -x -->
-- Run single file: <!-- exact command: e.g., pytest tests/test_foo.py -->
-- Run single test: <!-- exact command: e.g., pytest tests/test_foo.py::test_bar -->
-- Coverage:        <!-- exact command: e.g., pytest --cov=src --cov-report=term-missing -->
-- Fixture conventions: <!-- e.g., conftest.py fixtures, factory functions, test DBs -->
+- Framework:       Jest
+- Test location:   src/**/*.test.ts
+- Run all:         npm run test
+- Run single file: npx jest src/path/to/file.test.ts
+- Run single test: npx jest -t "test name"
+- Coverage:        npm run test -- --coverage
+- Fixture conventions: Jest beforeEach/afterEach; mock external I/O at module boundaries
 
 ## Quality Gate Chain
 
-<!-- Run in this exact order. All must pass before commit. -->
-
-1. <!-- test command -->
-2. <!-- lint command -->
-3. <!-- typecheck command -->
-4. <!-- security scan command -->
-5. <!-- dependency audit command -->
+1. npm run lint
+2. npm run test
+3. npm run build
 
 ## Directory Structure
 
-- Source root:     <!-- e.g., src/, lib/, crates/ -->
-- Test root:       <!-- e.g., tests/, test/ -->
-- Configuration:   <!-- e.g., config/, .env -->
-- Migrations:      <!-- e.g., migrations/ (if applicable) -->
-- Generated code:  <!-- e.g., generated/ (do not manually edit) -->
+- Source root:     src/
+- Test root:       src/**/*.test.ts
+- Configuration:   src/config/
+- Generated code:  dist/ (do not manually edit)
 
 ## Stack-Specific Rules
 
-<!-- Coding standards, idioms, and constraints unique to this project. -->
-<!-- Examples: -->
-<!-- - No panicking in non-test code. Use thiserror/anyhow. -->
-<!-- - All async handlers require timeout middleware. -->
-<!-- - On-chain functions must have NatSpec documentation. -->
-<!-- - All API responses use the shared envelope type. -->
-<!-- - No unwrap() outside #[cfg(test)] blocks. -->
+- Use Zod for ALL input validation and schema definitions — no raw type assertions at system boundaries.
+- Centralize all Redis configuration in `src/config/redis.ts`; never instantiate Redis clients inline.
+- No `any` type outside of test files.
+- All async functions must have explicit return types.
 
 ## MCP Context Modules Active
 

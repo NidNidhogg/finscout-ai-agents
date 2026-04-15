@@ -47,41 +47,9 @@ echo "  iDECP Quality Gate Chain"
 echo "═══════════════════════════════════════════════"
 echo ""
 
-# ── CUSTOMIZE THESE FOR YOUR PROJECT STACK ───────────────────────────────────
-#
-# Uncomment and edit the section matching your stack.
-# The order matters: tests first, then static analysis, then security.
-#
-# ── Python Example ──
-# run_gate "Tests"           "pytest tests/ -x --tb=short"
-# run_gate "Linter"          "ruff check src/"
-# run_gate "Type Check"      "mypy --strict src/"
-# run_gate "Security Scan"   "bandit -r src/ -q"
-# run_gate "Dep Audit"       "pip-audit"
-
-# ── Rust Example ──
-# run_gate "Tests"           "cargo test --workspace"
-# run_gate "Linter"          "cargo clippy --workspace -- -D warnings"
-# run_gate "Format Check"    "cargo fmt --check"
-# run_gate "Security Scan"   "cargo audit"
-# run_gate "Dep Check"       "cargo deny check"
-
-# ── TypeScript Example ──
-# run_gate "Tests"           "pnpm vitest run"
-# run_gate "Linter"          "pnpm eslint src/"
-# run_gate "Type Check"      "pnpm tsc --noEmit"
-# run_gate "Security Scan"   "pnpm audit --audit-level=high"
-
-# ── Solidity Example ──
-# run_gate "Tests"           "forge test -vvv"
-# run_gate "Linter"          "solhint 'contracts/**/*.sol'"
-# run_gate "Security Scan"   "slither ."
-
-# ── REMOVE THIS BLOCK AFTER CUSTOMIZING ──
-echo -e "${RED}ERROR: quality-gate.sh has not been customized.${NC}"
-echo "Edit scripts/quality-gate.sh and uncomment/add your project's gates."
-exit 2
-# ── END REMOVE ──
+run_gate "Lint"   "npm run lint"
+run_gate "Tests"  "npm run test"
+run_gate "Build"  "npm run build"
 
 echo "═══════════════════════════════════════════════"
 echo -e "  ${GREEN}All $TOTAL gates passed.${NC}"
