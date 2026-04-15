@@ -1,0 +1,133 @@
+# ============================================================================
+# orchestrator.yml — iDECP Self-Healing CI Pipeline
+# Manifesto Reference: §6.4
+#
+# !! TEMPLATE — Customize the setup steps for your project stack. !!
+# ============================================================================
+
+name: iDECP Orchestrator Pipeline
+
+on:
+  push:
+    branches:
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+
+# Prevent concurrent healing on same branch
+concurrency:
+  group: orchestrator-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AGENT_CLI: claude
+  MAX_RETRIES: 3
+  HEAL_TIMEOUT: 60
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git diff
+
+      # ── Setup Execution Environment ───────────────────────────────────
+      # !! CUSTOMIZE: Uncomment and edit for your stack !!
+
+      # Python:
+      # - name: Set up Python
+      #   uses: actions/setup-python@v5
+      #   with:
+      #     python-version: '3.12'
+      # - name: Install dependencies
+      #   run: pip install -r requirements.txt
+
+      # Rust:
+      # - name: Set up Rust
+      #   uses: dtolnay/rust-toolchain@stable
+      #   with:
+      #     components: clippy, rustfmt
+      # - name: Cache cargo
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: ~/.cargo
+      #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # TypeScript:
+      # - name: Set up Node.js
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '22'
+      # - name: Install dependencies
+      #   run: pnpm install --frozen-lockfile
+
+      # Solidity:
+      # - name: Set up Foundry
+      #   uses: foundry-rs/foundry-toolchain@v1
+
+      # ── Install Claude CLI ────────────────────────────────────────────
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # ── Self-Healing Pipeline ─────────────────────────────────────────
+      - name: Run Orchestrator Pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_CLI: ${{ env.AGENT_CLI }}
+        run: |
+          chmod +x scripts/orchestrate.sh scripts/quality-gate.sh
+          
+          # Detect spec for this branch
+          BRANCH="${GITHUB_REF_NAME}"
+          FEATURE=$(echo "$BRANCH" | sed -E 's|^(feat\|fix)/||')
+          SPEC_PATH="specs/${FEATURE}/spec.md"
+          
+          if [[ -f "$SPEC_PATH" ]]; then
+            echo "Spec found: $SPEC_PATH"
+            ./scripts/orchestrate.sh "./scripts/quality-gate.sh" \
+              --max-retries "$MAX_RETRIES" \
+              --timeout "$HEAL_TIMEOUT" \
+              --spec-ref "$SPEC_PATH"
+          else
+            echo "No spec found for feature: $FEATURE"
+            ./scripts/orchestrate.sh "./scripts/quality-gate.sh" \
+              --max-retries "$MAX_RETRIES" \
+              --timeout "$HEAL_TIMEOUT"
+          fi
+
+      # ── Upload Escalation Reports (on failure) ───────────────────────
+      - name: Upload Healing Failure Reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: heal-failures-${{ github.sha }}
+          path: .claude/heal-failures/
+          retention-days: 30
+
+      # ── Comment on PR (on failure) ───────────────────────────────────
+      - name: Comment Escalation on PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const glob = require('glob');
+            const reports = glob.sync('.claude/heal-failures/*.md');
+            if (reports.length === 0) return;
+            
+            const body = reports.map(f => fs.readFileSync(f, 'utf8')).join('\n---\n');
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🚨 Self-Healing Failed\n\nThe orchestrator pipeline exhausted all healing attempts.\n\n<details>\n<summary>Escalation Report</summary>\n\n${body}\n\n</details>\n\n**Action required:** Visionary must classify per §9.1 and respond.`
+            });

@@ -1,0 +1,4 @@
+# iDECP Orchestrator
+.env
+.claude/heal-logs/
+.claude/heal-failures/
