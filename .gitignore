@@ -7,3 +7,11 @@
 node_modules/
 dist/
 npm-debug.log*
+
+# Discovery pipeline — large fixture corpus can be regenerated
+# Individual fixtures under 10MB total may be committed; gitignore
+# triggers when corpus grows beyond that threshold.
+# Uncomment when needed:
+# data/fixtures/pages/*.json
+# data/fixtures/tweets/*.json
+# !data/fixtures/**/.gitkeep
