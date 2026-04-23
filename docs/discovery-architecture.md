@@ -1,7 +1,7 @@
 # Discovery Architecture
 
 > **Classification:** Internal — Engineering
-> **Status:** Pre-spec architecture document (v0.2)
+> **Status:** Pre-spec architecture document (v0.2.1)
 > **Scope:** The FinScout lead-discovery pipeline — from public signal to human-reviewed outreach candidate
 > **Audience:** Anyone implementing or reviewing specs for the Phase 1 modules (`enriched-profile`, `fingerprint`, `enrichment-engine`, `x-signal-source`, `review-queue`).
 
@@ -12,6 +12,17 @@ Where decisions were made with incomplete information, assumptions are marked **
 ---
 
 ## Changelog
+
+### v0.2.1 (supersedes v0.2)
+
+Resolution of the six open items from v0.2 §15 following design review. No structural changes; no interfaces changed; all Phase 1 spec work can now proceed against a fully-resolved architecture document.
+
+- **Confirmed: Cluster 1/2/3 ↔ Competency Matrix orthogonality** (§3.1). Clusters are market-facing taxonomy; competency cells are supply-side capability. They exist in parallel. [ASSUMPTION] marker removed from §3.1.
+- **Confirmed: Deployment model is Docker Compose** (§2), aligned with existing `docker compose up -d` pattern. Added runtime detail: local development is M4 MacBook Air with OrbStack; all Docker configurations must assume ARM64-native compatibility without `linux/amd64` emulation overhead.
+- **Confirmed: SQLite via `better-sqlite3` for review queue persistence** (§8.3). Postgres introduces unnecessary infrastructure overhead for solo-reviewer Phase 1. Migrate later if concurrency becomes real. [ASSUMPTION] marker removed from §8.3.
+- **Confirmed: X API tier is strictly Basic ($100/month).** Pro tier ($5000/month) breaks lean economics. Staged pre-filters (especially immediate anti-vocabulary drop) must be engineered to stay within Basic tier limits.
+- **Confirmed: Reviewer identity is hardcoded constant `"dmitriy"` for Phase 1.** YAGNI — no config loaders or env var parsers until a second human appears.
+- **Confirmed: Fixture corpus commit policy is commit-as-is.** Web3 public X handles and public website copy are not sensitive PII. Deterministic, version-controlled, real-world test corpus is critical for automatic-programming discipline.
 
 ### v0.2 (supersedes v0.1)
 
@@ -54,7 +65,7 @@ A second thesis, established in v0.2:
 - **English-only pipeline** end to end — data, schemas, prompts, review queue, logs. The English version of the ICP sheet is canonical.
 - **Competency matrix (5 cells)** from the RadianceTeam sales deck is the authoritative ICP reference. See §3.
 - **Foundation-window business model.** Target companies are $2M–$35M funded, Pre-Seed through Series A, within ~6-12 weeks of their foundation-architecture decisions.
-- **Deployment model:** Docker Compose, matching the pattern in the FinScout README (`docker compose up -d finscout-discovery-engine`).
+- **Deployment model:** Docker Compose, matching the pattern in the FinScout README (`docker compose up -d finscout-discovery-engine`). Local development runtime: M4 MacBook Air with OrbStack. All Docker configurations and image specifications must assume ARM64-native compatibility; avoid `linux/amd64` emulation overhead.
 - **Budget ceiling for external services: ~$150/month.** Comfortable at Phase 1 volumes (Firecrawl mid-tier ~$80, X API Basic ~$100 — slight overage absorbed since Claude API costs are minimal at current scale, and no Firecrawl volume pressure in Phase 1).
 - **Existing FinScout codebase:** Node 20, TypeScript 5.x, Jest 30, Zod v4, Express. The pipeline lives inside this codebase, not as a separate service.
 - **Protocol compliance:** All new modules follow the iDECP protocol — spec first, test scaffold, red-green TDD, Zod-validated interfaces, pure logic separated from I/O.
@@ -80,7 +91,7 @@ Cells are fingerprinted **independently** (see §10) with a shared core. A compa
 
 The ICP spreadsheet uses Cluster 1 (Stablecoins & Custody), Cluster 2 (RWA & Tokenization), Cluster 3 (Trading/DEX/Yield) as groupings.
 
-**[ASSUMPTION — confirm in review]** These clusters are *market-facing product categories* — how the market and Crunchbase describe these companies. They are **orthogonal** to the competency matrix, which captures *RadianceTeam's supply-side capabilities*. A single company has both attributes:
+These clusters are *market-facing product categories* — how the market and Crunchbase describe these companies. They are **orthogonal** to the competency matrix, which captures *RadianceTeam's supply-side capabilities*. A single company has both attributes:
 
 - `productCluster` (market-side): derived from Crunchbase sector and the company's own product description.
 - `competencyCellMatches` (supply-side): computed by the fingerprint against the 5 cells.
@@ -483,7 +494,7 @@ The `review:next` command displays:
 
 ### 8.3 Persistence
 
-**[ASSUMPTION — confirm in review]** SQLite via `better-sqlite3`, stored under `data/review-queue.db`. Rationale: zero-config, single-file, matches solo-operator scale for Phase 1; Postgres is overkill until multi-reviewer becomes real. If Phase 1 review reveals need for concurrent review or web UI, migrate at that point.
+SQLite via `better-sqlite3`, stored under `data/review-queue.db`. Rationale: zero-config, single-file, matches solo-operator scale for Phase 1; Postgres is overkill until multi-reviewer becomes real. If Phase 1 review reveals need for concurrent review or web UI, migrate at that point.
 
 ### 8.4 Phase 1 DoD measurement
 
@@ -764,14 +775,16 @@ The retroactive XDiscoverySource spec is the smallest first move (agent prompt a
 
 ## 15. Open Questions (For Review)
 
-Reduced from v0.1's ten items after most resolved in v0.2 drafting:
+All six items from the original v0.2 list have been resolved. Preserved here as a decision record; see v0.2.1 changelog for details.
 
-1. **Cluster 1/2/3 ↔ Competency Matrix relationship** (§3.1): still flagged as [ASSUMPTION] — confirm orthogonality or correct.
-2. **Deployment model** (§2): Docker Compose matching existing FinScout pattern — confirm.
-3. **Persistence layer for review queue** (§8.3): SQLite acceptable, or is there a reason to prefer Postgres or another store?
-4. **X API tier**: "Basic" ($100/mo) sufficient for Phase 1 volumes, or does Web3 volume warrant Pro? Re-examine after 1 week of live running.
-5. **Reviewer identity persistence**: the `reviewedBy` field — just `"dmitriy"` for Phase 1 as you said, but is there a convention for this already in the codebase?
-6. **Fixture corpus commit policy**: capturing live-run page outputs as test fixtures is valuable for regression, but may include captured-tweet content with author handles. Any PII/ToS considerations before committing these?
+1. **Cluster 1/2/3 ↔ Competency Matrix relationship** (§3.1): ✅ **RESOLVED** — confirmed orthogonal. Clusters are market-facing taxonomy; competency cells are supply-side capability. Parallel attributes on each company.
+2. **Deployment model** (§2): ✅ **RESOLVED** — Docker Compose confirmed. Added runtime constraint: M4 MacBook Air with OrbStack; ARM64-native images required.
+3. **Persistence layer for review queue** (§8.3): ✅ **RESOLVED** — SQLite via `better-sqlite3`. Postgres deferred until multi-reviewer becomes real.
+4. **X API tier**: ✅ **RESOLVED** — strictly Basic ($100/month). Staged pre-filters must keep us within Basic tier limits; Pro tier is off the table for Phase 1 economics.
+5. **Reviewer identity persistence**: ✅ **RESOLVED** — hardcoded constant `"dmitriy"` for Phase 1. Revisit when second reviewer appears.
+6. **Fixture corpus commit policy**: ✅ **RESOLVED** — commit fixtures as-is (Option a). Public Web3 data; deterministic corpus is critical for regression testing.
+
+No items remain open. Future design decisions go into their own architecture addenda, not this list.
 
 ---
 
@@ -797,4 +810,4 @@ Only then does Phase 2 begin.
 
 ---
 
-*End of discovery-architecture.md v0.2*
+*End of discovery-architecture.md v0.2.1*
