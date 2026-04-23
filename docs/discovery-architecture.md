@@ -1,19 +1,38 @@
 # Discovery Architecture
 
 > **Classification:** Internal — Engineering
-> **Status:** Pre-spec architecture document (v0.1)
+> **Status:** Pre-spec architecture document (v0.2)
 > **Scope:** The FinScout lead-discovery pipeline — from public signal to human-reviewed outreach candidate
-> **Audience:** Anyone implementing or reviewing specs for `competency-matrix/`, `website-qualifier/`, `x-funding-listener/`, or `review-queue/`
+> **Audience:** Anyone implementing or reviewing specs for the Phase 1 modules (`enriched-profile`, `fingerprint`, `enrichment-engine`, `x-signal-source`, `review-queue`).
 
-This document captures the architectural decisions that shape the FinScout discovery pipeline. It is the parent document for the four module specs that follow. Its purpose is to pin down *interfaces, contracts, and constraints* so that spec authors and implementers do not re-litigate structural questions during TDD.
+This document captures the architectural decisions that shape the FinScout discovery pipeline. It is the parent document for the five Phase 1 module specs that follow. Its purpose is to pin down *interfaces, contracts, and constraints* so that spec authors and implementers do not re-litigate structural questions during TDD.
 
 Where decisions were made with incomplete information, assumptions are marked **[ASSUMPTION]** and must be confirmed or corrected during review.
 
 ---
 
+## Changelog
+
+### v0.2 (supersedes v0.1)
+
+The architecture in v0.1 was a single three-stage pipeline (X listener → Website qualifier → Review queue). After design review, the pipeline was split into two modules with a typed contract between them, and Phase 1 was reframed as live-signal validation rather than labeled-set reproduction. Specific changes:
+
+- **NEW: Two-module architecture.** `EnrichmentEngine` (Module A) and `ScoringAgent` (Module B) are now separate modules connected by the `EnrichedProfile` Zod schema. Phase 1 builds Module A only; Module B is explicitly out of scope until Phase 1 exits.
+- **NEW: Module A is validated by live X signal with manual review**, not by automated reproduction against the 65-company labeled set. The 65-company set has a dual role: upstream as fingerprint training input; downstream as scoring-validation ground truth in Phase 2.
+- **NEW: Phase 1 Definition of Done is a hard quality gate.** 25-40 enriched profiles reviewed, ≥80% must support confident tier decisions from profile content alone without external lookup. Encoded as an explicit AC in `specs/review-queue/spec.md`.
+- **NEW: Fingerprint is human-in-the-loop, AI-assisted, with Core+Cell inheritance.** Shared `core-web3-signals` and `core-web3-anti-signals` are extended by per-cell fingerprints. CLI-driven curation workflow; version-controlled JSON artifacts.
+- **NEW: Structured missing-evidence logging.** Reviewer annotations use a Zod enum (`missing_tech_stack`, `missing_traction_signal`, `missing_founder_context`, `missing_architecture_signal`, `noise_false_positive`) plus free-text notes. Aggregates into prioritized enrichment-improvement backlog.
+- **NEW: Staged pre-filter in Module A.** Cheap deterministic filters (template match → anti-vocabulary exclusion → vocabulary density → company resolution) run before any Firecrawl call. Full enrichment runs only on tweets that pass the pre-filter. Manages Web3-volume signal without blowing the budget.
+- **REMOVED: "Crunchbase backstop" as an automated stage.** Crunchbase remains a manual step used by the reviewer during Stage 3; no programmatic access is attempted.
+- **REMOVED: The `[ASSUMPTION]`/§15 reconciliation issue from v0.1.** Resolved assumptions are now inline; remaining open items consolidated in §15 and counted consistently.
+- **REMOVED: `founder_unreachable` from the `DowngradeReason` enum.** Per MVA/YAGNI discipline — Phase 1 has no automated LinkedIn enrichment, so the enum reflects current reality. Reintroduced in Phase 2 when the LinkedIn connector spec lands.
+- **RESOLVED from v0.1 §15:** English-only pipeline (confirmed); per-cell fingerprints with Core inheritance (confirmed); reference clients feed fingerprint (confirmed, with lower weight than v0.1 proposed — see §10); Firecrawl as Stage 2 fetcher (confirmed); ~$150/month budget target (confirmed comfortable at Phase 1 volumes).
+
+---
+
 ## 1. Thesis
 
-FinScout sells [MVA (Minimum Viable Architecture)](../RT_prezentation_v_7_1__long_.pdf) engineering services to early-stage fintech and Web3 startups. The Sales Factory's job is to find companies that are (a) at a stage where MVA work fits (pre-scale, pre-rewrite), and (b) building a product whose architecture maps to RadianceTeam's competency matrix.
+FinScout sells MVA (Minimum Viable Architecture) engineering services to early-stage fintech and Web3 startups. The Sales Factory's job is to find companies that are (a) at a stage where MVA work fits (pre-scale, pre-rewrite), and (b) building a product whose architecture maps to RadianceTeam's competency matrix.
 
 The **central thesis** of this architecture is:
 
@@ -21,22 +40,25 @@ The **central thesis** of this architecture is:
 
 The pipeline is designed around this asymmetry: **X for discovery, websites for qualification, human judgment for tier assignment, Crunchbase (manual) for verification.**
 
+A second thesis, established in v0.2:
+
+> **Enrichment and scoring are different engineering problems with different failure modes.** Enrichment fails on coverage and freshness; scoring fails on judgment and calibration. Mixing them means every failure is ambiguous. Separating them makes each independently testable and independently improvable. Phase 1 establishes a rock-solid data foundation (Module A only); Phase 2 layers scoring on top.
+
 ---
 
 ## 2. Constraints That Shaped the Design
 
-These constraints are the result of explicit conversations and business realities. Any future change to the architecture should start by re-examining whether these constraints still hold.
-
 - **ToS-legitimate data access only.** X has a real API; we use it. Crunchbase and LinkedIn are both scrape-hostile at the API level. We do not scrape them for discovery. Crunchbase appears in the pipeline only as a human-reviewed verification step. LinkedIn is reserved entirely for outreach (a separate concern, not this pipeline).
-- **Target throughput: 25 reviewable candidates per week.** This pins the whole funnel shape (see §5).
-- **65-company labeled dataset** (38 Tier A, 14 Tier B, 14 Tier C) available as ground truth for validating the website qualifier.
+- **Target throughput (steady state): 25 reviewable candidates per week.** Phase 1 operates below this; live validation expects to hit 25-40 profiles in days, not weeks, given Web3-X signal density.
+- **65-company labeled dataset** (38 Tier A, 14 Tier B, 14 Tier C) — fingerprint training input in Phase 1; scoring validation ground truth in Phase 2.
 - **English-only pipeline** end to end — data, schemas, prompts, review queue, logs. The English version of the ICP sheet is canonical.
-- **Competency matrix (5 cells)** from the RadianceTeam sales deck is the authoritative ICP reference — not sector codes, not Crunchbase taxonomy. See §3.
+- **Competency matrix (5 cells)** from the RadianceTeam sales deck is the authoritative ICP reference. See §3.
 - **Foundation-window business model.** Target companies are $2M–$35M funded, Pre-Seed through Series A, within ~6-12 weeks of their foundation-architecture decisions.
-- **Deployment model:** Docker Compose, matching the pattern in the FinScout README (`docker compose up -d finscout-discovery-engine`). **[ASSUMPTION — confirm in review]**
-- **Budget ceiling for external services: ~$150/month.** Covers Firecrawl, X API, and Claude extraction calls at expected throughput. **[ASSUMPTION — confirm in review]**
+- **Deployment model:** Docker Compose, matching the pattern in the FinScout README (`docker compose up -d finscout-discovery-engine`).
+- **Budget ceiling for external services: ~$150/month.** Comfortable at Phase 1 volumes (Firecrawl mid-tier ~$80, X API Basic ~$100 — slight overage absorbed since Claude API costs are minimal at current scale, and no Firecrawl volume pressure in Phase 1).
 - **Existing FinScout codebase:** Node 20, TypeScript 5.x, Jest 30, Zod v4, Express. The pipeline lives inside this codebase, not as a separate service.
 - **Protocol compliance:** All new modules follow the iDECP protocol — spec first, test scaffold, red-green TDD, Zod-validated interfaces, pure logic separated from I/O.
+- **CLI-first tooling for human-in-loop workflows.** No web UIs in Phase 1. Fingerprint curation, review queue interaction, and validation are all CLI commands integrating with the `.agents/commands/` slash-command pattern already established.
 
 ---
 
@@ -46,19 +68,13 @@ The competency matrix is the single authoritative definition of what FinScout's 
 
 | Cell | Description | Keyword Markers (representative) | Example Tier A Matches |
 |------|-------------|----------------------------------|------------------------|
-| **DeFi & Yield** | Stablecoins (TRON, ETH, TON), Rebase mechanisms, Staking logic | stablecoin, rebase, yield, staking, TRON, TON, EVM | Avenia, Bleap, Levl, YO Labs, LumeFi |
+| **DeFi & Yield** | Stablecoins (TRON, ETH, TON), Rebase mechanisms, Staking logic | stablecoin, rebase, yield, staking, TVL, liquidity provisioning, flash loan resistance | Avenia, Bleap, Levl, YO Labs, LumeFi |
 | **Trading** | Margin trading engines, Risk management blocks, DEX/AMM forks | margin, liquidation, AMM, DEX, order book, MEV, risk engine | Architect, Penguin Sec., RateX, fomo, Hello Trade |
-| **Infrastructure** | Cross-chain bridges, Multisig governance, High-load microservices | cross-chain, bridge, multisig, throughput, latency, microservice | Rift, Euclid, Sprinter, Superset, Firefish, Bitway |
-| **Security** | Audited smart contracts, HSM software modules, Cryptography, Decentralized ID | HSM, audit, formal verification, multisig, GOST, KMS, DID | CheckSig, Deblock, Axiology, Tenbin Labs, OpenEden |
-| **Payment Rails** | SBP integration, Fiat-to-Crypto gateways | Fiat-to-Crypto, gateway, settlement, on-ramp, off-ramp, AML | Ruvo, PEXX, Nodu, Based, Netaro |
+| **Infrastructure** | Cross-chain bridges, Multisig governance, High-load microservices | cross-chain, bridge, multisig, throughput, settlement finality, bare-metal cores | Rift, Euclid, Sprinter, Superset, Firefish, Bitway |
+| **Security** | Audited smart contracts, HSM software modules, Cryptography, Decentralized ID | HSM, audit, formal verification, multisig, KMS, DID, institutional custody | CheckSig, Deblock, Axiology, Tenbin Labs, OpenEden |
+| **Payment Rails** | SBP integration, Fiat-to-Crypto gateways | Fiat-to-Crypto, gateway, settlement, on-ramp, off-ramp, AML, compliance automation | Ruvo, PEXX, Nodu, Based, Netaro |
 
-Every candidate in the pipeline is scored against **each cell independently** on a 0.0–1.0 relevance scale. A company may match multiple cells; multi-cell matches are *stronger signals* (indicating broader architectural need) and should rank higher in the review queue.
-
-The matrix is **the spine** in the sense that every downstream decision references it:
-- Stage 1's X vocabulary filter is derived from cell keyword markers.
-- Stage 2's website qualifier scores each candidate per cell.
-- The review queue's prioritization uses aggregate cell scores.
-- The tiering rubric references which and how many cells matched.
+Cells are fingerprinted **independently** (see §10) with a shared core. A company may match multiple cells; multi-cell matches are stronger signals (indicating broader architectural need). In Phase 1, cell matching feeds reviewer context; in Phase 2, it drives automated scoring.
 
 ### 3.1 Relationship to the Cluster 1/2/3 Taxonomy
 
@@ -67,278 +83,352 @@ The ICP spreadsheet uses Cluster 1 (Stablecoins & Custody), Cluster 2 (RWA & Tok
 **[ASSUMPTION — confirm in review]** These clusters are *market-facing product categories* — how the market and Crunchbase describe these companies. They are **orthogonal** to the competency matrix, which captures *RadianceTeam's supply-side capabilities*. A single company has both attributes:
 
 - `productCluster` (market-side): derived from Crunchbase sector and the company's own product description.
-- `competencyScores` (supply-side): computed by the pipeline against the 5 cells.
+- `competencyCellMatches` (supply-side): computed by the fingerprint against the 5 cells.
 
-Clusters are used for **reporting and human navigation** (e.g., "show me this week's Tier A candidates in Cluster 1"). Scoring and prioritization run on the competency matrix.
+Clusters are used for **reporting and human navigation** (e.g., "show me this week's reviewed profiles in Cluster 1"). Scoring and prioritization run on competency cells.
 
 ### 3.2 Reference Clients as Fingerprint Seeds
 
-**[ASSUMPTION — confirm in review]** RadianceTeam's existing customer case studies (the stablecoin management system operating at billion-dollar volumes per the deck, and any others) are treated as a parallel dataset alongside the 65-company Crunchbase ICP:
+RadianceTeam's existing customer case studies (the stablecoin management system operating at billion-dollar volumes per the deck, and any others) are treated as a parallel dataset alongside the 65-company ICP:
 
 ```
 ICPReference = {
-  crunchbaseICP: ICPMember[],      // The 65 from your current list
+  crunchbaseICP: ICPMember[],      // The 65 from the current labeled list
   referenceClients: ICPMember[],   // Existing RadianceTeam customers
 }
 ```
 
-Both feed the competency fingerprint. Reference clients are **weighted higher** (e.g., 2×) in fingerprint derivation because they are ground-truth positive examples of successful MVA engagements, not just hypothesized fits.
+Both feed the competency fingerprint during the curation workflow. Reference clients are **weighted higher** in AI-suggestion vocabulary extraction because they are ground-truth positive examples of successful MVA engagements. Final fingerprint terms are human-curated regardless of source weighting (see §10).
 
 ---
 
-## 4. Pipeline Overview
+## 4. Pipeline Overview — Two Modules, One Contract
 
 ```
-                   ICPReference
-                  (matrix + dataset)
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │ Competency Fingerprint│
-              │  (5 cell vocabularies) │
-              └──────────┬───────────┘
-                         │
-         ┌───────────────┼───────────────┐
-         │               │               │
-         ▼               ▼               ▼
-┌────────────────┐ ┌────────────┐ ┌─────────────┐
-│ Stage 1:       │ │ Stage 2:   │ │ Stage 3:    │
-│ X Funding-     │ │ Website    │ │ Human       │
-│ Listener       │─▶ Qualifier  │─▶ Review      │
-│                │ │            │ │ Queue       │
-└────────────────┘ └────────────┘ └──────┬──────┘
-                                         │
-                                         ▼
-                                   sales-factory.
-                                   qualifyLead()
-                                         │
-                                         ▼
-                                   Outreach Queue
-                                  (LinkedIn, manual
-                                   or via future
-                                   connector)
+                    ICPReference
+                   (matrix + 65 companies + ref clients)
+                           │
+                           ▼
+            ┌──────────────────────────┐
+            │  Fingerprint Authoring   │   Phase 0 / ongoing
+            │  (human-in-the-loop,     │   CLI workflow
+            │   AI-assisted curation)  │   Versioned JSON artifacts
+            └──────────┬───────────────┘
+                       │
+                       ▼
+            ┌──────────────────────────┐
+            │  data/fingerprints/      │
+            │  ├── core-web3-signals   │
+            │  ├── core-web3-anti-     │
+            │  │   signals             │
+            │  └── cells/              │
+            │      ├── defi-&-yield    │
+            │      ├── trading         │
+            │      ├── infrastructure  │
+            │      ├── security        │
+            │      └── payment-rails   │
+            └──────────┬───────────────┘
+                       │
+                       ▼
+       ┌───────────────────────────────────┐
+       │   MODULE A — Enrichment Engine    │   PHASE 1 SCOPE
+       │   ┌───────────────────────────┐   │
+       │   │  X Signal Source           │   │   ← live X firehose
+       │   │  (funding template match  │   │   ← cheap pre-filter
+       │   │   + anti-vocab exclusion  │   │   ← company resolution
+       │   │   + vocab density)        │   │
+       │   └────────────┬──────────────┘   │
+       │                ▼                   │
+       │   ┌───────────────────────────┐   │
+       │   │  Website Enrichment       │   │   ← Firecrawl
+       │   │  (crawl, extract,         │   │   ← careers, docs,
+       │   │   architecture signals)   │   │     about, blog
+       │   └────────────┬──────────────┘   │
+       │                ▼                   │
+       │   ┌───────────────────────────┐   │
+       │   │  Profile Composer         │   │   ← merges X + website
+       │   │  (builds EnrichedProfile)│   │     + freshness +
+       │   │                           │   │     provenance
+       │   └────────────┬──────────────┘   │
+       └────────────────┼──────────────────┘
+                        ▼
+                   EnrichedProfile   ◄──── THE CONTRACT
+                        │
+                        │  (persisted, inspectable,
+                        │   replayable, versionable)
+                        │
+                        ▼
+       ┌───────────────────────────────────┐
+       │   Review Queue (Phase 1)          │   PHASE 1 SCOPE
+       │   - reviewer reads profile        │
+       │   - assigns tier A/B/C manually   │
+       │   - logs missing_evidence_types  │
+       │   - logs free-text reviewerNote  │
+       │   - measures Phase 1 adequacy AC  │
+       └───────────────────┬───────────────┘
+                           │
+                           ▼
+                     TieredLead
+                     (to outreach queue,
+                      manual LinkedIn process)
 ```
 
-- **Stage 1 — X Funding-Listener:** surfaces ~50-65 funding-matched candidates per week from X, filtered by competency vocabulary.
-- **Stage 2 — Website Qualifier:** crawls each candidate's website via Firecrawl, scores against the competency matrix, detects hard-gate signals. Outputs ~25 qualified candidates per week.
-- **Stage 3 — Human Review Queue:** prioritized by Stage 2 score, surfaced to a human reviewer who confirms funding/stage/team size via Crunchbase UI and assigns Tier A/B/C. Outputs ~18-20 Tier A/B per week to outreach.
+The dashed boundary below is **Phase 2** and is deliberately out of scope for this document:
 
-Each stage is independently specified, tested, and swappable. The pipeline contracts between stages are typed `Zod` schemas (see §6).
-
----
-
-## 5. Throughput Targets and Implications
-
-Working backwards from the 25-per-week review target:
-
-| Stage | Input | Output | Pass Rate | Weekly Output |
-|-------|-------|--------|-----------|---------------|
-| Stage 1 (X) | X firehose (competency-filtered) | FundingSignal | N/A (filter) | ~60/wk |
-| Stage 2 (Website) | FundingSignal | QualifiedCandidate | ~40-60% | ~25/wk |
-| Stage 3 (Review) | QualifiedCandidate | TieredLead (A/B) | ~70-80% A/B | ~18-20/wk |
-
-### 5.1 Precision Requirements
-
-For the review queue to be worth a human reviewer's time, **≥70% of reviewed candidates should be plausibly Tier A or Tier B**. Below that threshold, the queue feels like noise and will be skipped. Above ~90%, the qualifier is too strict and likely missing real leads.
-
-### 5.2 Review Capacity
-
-25 candidates/week × 3 minutes/candidate ≈ 75 minutes/week of human review. Sustainable load for a founder or a half-time reviewer.
-
-### 5.3 Outreach Capacity Tension
-
-**[FLAG]** 18-20 Tier A/B per week going into outreach will likely exceed current outreach throughput (based on the pace visible in the ICP sheet's Status column). Once the pipeline is running, expect to either:
-
-- **Tighten Stage 2** to produce fewer but higher-confidence candidates matching outreach capacity, OR
-- **Scale outreach** — which is the logical next system buildout (see `docs/linkedin-connector.md`, not yet written).
-
-This is a downstream concern but worth anticipating. The Stage 2 threshold is a tunable dial; do not hardcode its value.
+```
+       ┌───────────────────────────────────┐
+       │   MODULE B — Scoring Agent        │   PHASE 2 (NOT YET BUILT)
+       │   Consumes EnrichedProfile        │
+       │   Proposes tier assignment        │
+       │   Validated against 65-company    │
+       │     labeled set                   │
+       └───────────────────────────────────┘
+```
 
 ---
 
-## 6. Stage Contracts (Interfaces)
+## 5. Throughput and Phase 1 Volume
 
-These are the typed interfaces between stages. Full Zod schemas belong in each stage's spec, but the shapes are pinned here so specs align.
+### 5.1 Expected Phase 1 volume
 
-### 6.1 `FundingSignal` — Stage 1 → Stage 2
+Web3/crypto X signal is dense. A strictly-tuned competency fingerprint is expected to surface candidates at roughly 5-10 per day — meaning the 25-40 profile threshold for Phase 1 DoD is reached within a week, not the 8-16 weeks a conservative fintech estimate would produce.
+
+### 5.2 Phase 1 risk profile
+
+The dominant risk is **over-volume from an insufficiently-strict fingerprint**, not under-volume. Review time is the bottleneck. The fingerprint starts strict and is relaxed only if empirical evidence shows the funnel is starving.
+
+### 5.3 Steady-state targets (post-Phase 1, for reference)
+
+| Stage | Weekly output | Pass rate |
+|-------|--------------|-----------|
+| X Signal Source | ~50-65 candidates/wk pass pre-filter | N/A (filter) |
+| Website Enrichment | ~25 EnrichedProfiles/wk | ~40-60% |
+| Phase 2 Scoring → Review | ~18-20 Tier A/B/wk | ~70-80% A/B after review |
+
+### 5.4 Phase 1 Definition of Done
+
+**Enrichment is approved when:**
+
+- At least 25 (target: 25-40) EnrichedProfiles have been produced from live X signal and reviewed.
+- For ≥80% of reviewed profiles, the reviewer can confidently assign a tier (A, B, or C) using only the EnrichedProfile content — without opening Crunchbase, LinkedIn, or the company website.
+- Profiles failing the adequacy test are tagged with at least one `missing_evidence_type` enum value plus a free-text note.
+- Aggregated failure modes have been reviewed; no single `missing_evidence_type` dominates >40% of failures (indicating that enrichment has no single-point systematic gap).
+
+The DoD is encoded as an explicit AC in `specs/review-queue/spec.md`. It is a hard quality gate — Module B work does not begin until this AC passes.
+
+### 5.5 Outreach capacity tension (unchanged from v0.1)
+
+**[FLAG]** The steady-state rate of 18-20 Tier A/B/week will likely exceed current manual outreach throughput. This is a downstream concern; Phase 1 does not surface it. Once Module B is running, tighten Stage 2 or scale outreach (the LinkedIn-connector module discussed separately). Do not hardcode scoring thresholds.
+
+---
+
+## 6. Stage Contracts
+
+### 6.1 `EnrichedProfile` — Module A → Review Queue → (Module B in Phase 2)
+
+This is the central contract of the architecture. Full Zod schema is specified in `specs/enriched-profile/spec.md`; the shape is pinned here.
 
 ```typescript
-FundingSignal = {
+EnrichedProfile = {
   id: string;                          // uuid
-  discoveredAt: Date;                  // when Stage 1 surfaced it
-  source: "x";                         // future: "x" | "crunchbase" | ...
+  enrichedAt: Date;
+  schemaVersion: string;               // semver, for forward migration
 
-  // Claimed funding from the tweet
-  claimedAmount: {
-    valueUSD: number;                  // parsed from tweet; may be approximate
-    stage?: FundingStage;              // Pre-Seed, Seed, Series A, etc.
-    claimedAt: Date;                   // date of the announcement tweet
-    confidence: number;                // 0.0-1.0 from template match strength
+  // Sources and freshness — provenance per-field is tracked in sources
+  sources: {
+    xApi?: {
+      lastFetched: Date;
+      tweetsConsidered: number;
+      founderHandle?: string;
+    };
+    websiteCrawl?: {
+      lastFetched: Date;
+      pagesCrawled: URL[];
+      fetcher: "firecrawl" | string;   // swappable impl audit trail
+    };
+    // future: crunchbaseManual, predictLeads, etc.
   };
 
-  // Identity resolution
+  // Identity
   company: {
-    nameAsStated: string;              // from the tweet
-    handleX?: string;                  // @handle if findable
-    websiteUrl?: URL;                  // derived from X bio or tweet link
-  };
-  founder?: {
-    nameAsStated?: string;
-    handleX: string;                   // the founder who announced
-  };
-
-  // Why we surfaced it
-  evidence: {
-    tweetUrl: URL;
-    tweetText: string;
-    matchedTemplates: string[];        // which funding-announcement patterns fired
-    suspectedCells: CompetencyCell[];  // which matrix cells the vocabulary touched
+    name: string;
+    normalizedName: string;
+    websiteUrl: URL;
+    xHandle?: string;
+    linkedinUrl?: URL;                 // captured but not used in Phase 1
+    country?: string;                  // inferred or explicit
   };
 
-  // Dedup key (so we don't enqueue the same company twice within N days)
-  dedupKey: string;                    // normalized company name + claimedAmount
-};
-```
-
-### 6.2 `QualifiedCandidate` — Stage 2 → Stage 3
-
-```typescript
-QualifiedCandidate = {
-  id: string;
-  fundingSignal: FundingSignal;       // carries the Stage 1 evidence through
-
-  // Website crawl results
-  websiteQualification: {
-    crawledAt: Date;
-    pagesVisited: URL[];               // e.g., /about, /careers, /docs
-    fetcherImpl: "firecrawl" | string; // for audit / future swap
-
-    // Per-cell competency scoring
-    competencyScores: Record<CompetencyCell, {
-      score: number;                   // 0.0-1.0
-      evidence: string[];              // quoted snippets supporting the score
-      extractionMethod: "deterministic" | "llm" | "hybrid";
-    }>;
-
-    // Hard-gate signals observed
-    hardGateSignals: {
-      teamSizeEstimate?: number;       // from /about, /careers
-      stageSignals: string[];          // e.g., "seed round announced", "hiring first 5"
-      architectureEvidence: string[];  // specific tech mentioned
-      antiSignals: string[];           // e.g., "looking for cheap dev shop"
+  // Funding — claimed (from X or announcement); confirmed filled at review
+  funding: {
+    claimed: {
+      amountUSD?: number;
+      stage?: FundingStage;
+      claimedAt?: Date;
+      announcementUrl?: URL;
+      rawText?: string;                // source tweet or press release text
+      templateMatched?: string[];      // which funding-announcement patterns fired
     };
-
-    // Overall score used for review queue priority
-    aggregateScore: number;            // composite for ranking
-  };
-};
-```
-
-### 6.3 `TieredLead` — Stage 3 → `sales-factory`
-
-```typescript
-TieredLead = {
-  id: string;
-  qualifiedCandidate: QualifiedCandidate;
-
-  review: {
-    reviewedAt: Date;
-    reviewedBy: string;                // for audit
-    tier: "A" | "B" | "C";
-    tierReason: string;                // required free-text justification
-    crunchbaseConfirmed: {
-      // Filled in during manual Crunchbase check
+    confirmed?: {                      // reviewer fills from Crunchbase
+      amountUSD?: number;
+      stage?: FundingStage;
+      closedAt?: Date;
+      investors?: string[];
+      leadTimeDays?: number;           // claimedAt → closedAt
       foundInCrunchbase: boolean;
-      actualAmountUSD?: number;
-      actualStage?: FundingStage;
-      actualDate?: Date;
-      leadTimeDays?: number;           // X-claimed date → Crunchbase-indexed date
     };
-    downgradeReasons?: string[];       // if B or C: why
+  };
+
+  // Product and architecture (from website)
+  product: {
+    description?: string;              // from /about or homepage
+    selfClaimedCategory?: string;      // e.g., "stablecoin infrastructure"
+    stackMentions: string[];           // from /careers, docs, engineering
+    architectureTerms: string[];       // multisig, HSM, cross-chain, bare-metal, etc.
+    antiSignalTerms: string[];         // outstaffing, cheap, etc.
+    competencyCellMatches: Array<{
+      cell: CompetencyCell;            // which of the 5 cells fired
+      matchedSignals: string[];        // specific terms that matched
+      matchedCoreSignals: string[];    // which core vocabulary fired
+      score: number;                   // 0.0-1.0 vocabulary density
+    }>;
+    evidence: Array<{
+      page: URL;
+      snippet: string;
+      relevance: "high" | "medium" | "low";
+      relatedCells?: CompetencyCell[];
+    }>;
+  };
+
+  // Team signals
+  team: {
+    estimatedHeadcount?: number;
+    headcountSource?: "about_page" | "careers_count" | "unknown";
+    founders: Array<{
+      name?: string;
+      role?: string;
+      xHandle?: string;
+      linkedinUrl?: URL;
+      bioSnippet?: string;
+      isFoundingEngineer?: boolean;
+    }>;
+    openRoles?: Array<{
+      title: string;
+      stackHints: string[];
+      seniority?: "junior" | "mid" | "senior" | "lead";
+    }>;
+  };
+
+  // Raw content retained for reprocessing — disk is cheap, re-crawl is expensive
+  rawContent: {
+    websiteMarkdown: Record<string, string>;  // url → markdown
+    sourceTweets?: Array<{
+      id: string;
+      text: string;
+      postedAt: Date;
+      authorHandle: string;
+      authorBio?: string;
+    }>;
   };
 };
 ```
 
-The `TieredLead` feeds directly into `sales-factory.qualifyLead()` (existing iDECP module) for downstream scoring against the hard gates (+40/+30/+30/−50) and mapping into the MVA block via the Researcher Agent.
+Notice what's not in `EnrichedProfile`: **no tier, no overall score, no "fit" verdict**. Those are Module B concerns. Module A describes; Module B judges.
+
+### 6.2 Reviewer Annotation — attached to `EnrichedProfile` at review time
+
+```typescript
+ReviewAnnotation = {
+  profileId: string;
+  reviewedAt: Date;
+  reviewedBy: string;                  // for audit
+
+  // Phase 1 adequacy measurement
+  profileAdequate: boolean;            // could tier be assigned from profile alone?
+  missingEvidenceTypes: MissingEvidenceType[];  // empty if adequate
+  reviewerNote?: string;               // free-text context, especially for adequate=false
+
+  // Tier decision (manual in Phase 1)
+  tier: "A" | "B" | "C";
+  tierReason: string;
+  downgradeReasons?: DowngradeReason[];
+
+  // Crunchbase cross-reference captured during review
+  crunchbaseCheck: {
+    checked: boolean;
+    foundInCrunchbase?: boolean;
+    actualAmountUSD?: number;
+    actualStage?: FundingStage;
+    actualDate?: Date;
+  };
+};
+
+// Phase 1 starting vocabulary; extend as patterns emerge
+MissingEvidenceType =
+  | "missing_tech_stack"
+  | "missing_traction_signal"
+  | "missing_founder_context"
+  | "missing_architecture_signal"
+  | "noise_false_positive";
+
+// From existing Tier C analysis in the 65-company dataset.
+// `founder_unreachable` removed per MVA/YAGNI — reintroduce in Phase 2
+// when the LinkedIn connector lands.
+DowngradeReason =
+  | "competency_mismatch"
+  | "wrong_vertical"
+  | "business_risk_override"
+  | "stage_too_late"
+  | "stage_too_early"
+  | "acquired_or_state_backed";
+```
+
+### 6.3 Out-of-scope: `ScoredCandidate`
+
+Phase 2 introduces a `ScoredCandidate` shape that wraps `EnrichedProfile` with Module B's automated tier prediction. Its schema is explicitly not specified in this document. It will be pinned in the Phase 2 architecture addendum written after Phase 1 DoD is hit.
 
 ---
 
-## 7. Stage 1: X Funding-Listener
+## 7. Module A — Enrichment Engine
 
 ### 7.1 Responsibility
 
-Monitor X for funding-announcement posts that match the competency vocabulary, producing `FundingSignal` records. This is a recency-biased, narrow-pattern listener — not a general X scraper.
+Given live X signal, produce `EnrichedProfile` records with sufficient depth and accuracy that a human reviewer can make confident tier decisions from profile content alone.
 
-### 7.2 Core Computation
+### 7.2 Internal structure
 
-1. **Subscription to a filtered X stream** (via X API v2 filtered stream or recent-search on a cadence).
-2. **Template matching** against funding-announcement phrase patterns. Representative templates (non-exhaustive):
-   - `"(we|[Company]) (raised|closed|secured|announced).*\$[0-9]+M"`
-   - `"excited to (share|announce).*(seed|series A|pre-seed)"`
-   - `"today.*closed.*(funding|round)"`
-   - Emoji + dollar-amount patterns (e.g., "🎉 $7M")
-3. **Competency vocabulary filter** — the post (or the author's bio + recent tweets) must contain vocabulary from at least one competency cell above a minimum density threshold.
-4. **Company resolution** — extract company name, resolve X handle and website URL (prefer handle bio link; fall back to Google Knowledge Graph-style lookup or Claude-assisted disambiguation if needed).
-5. **Deduplication** against the ICPReference dataset (already-known companies) and against the recent FundingSignal log (don't re-enqueue the same tweet or the same company/round twice).
-6. **Emission** of a `FundingSignal` into Stage 2's queue.
+Module A has three internal sub-modules, each with its own spec:
 
-### 7.3 Implementation Notes
+- **X Signal Source** (`specs/x-signal-source/`) — funding-announcement template matching, vocabulary-density filtering, anti-vocabulary exclusion, company resolution. Outputs a stream of `CompanyCandidate` (internal shape) into the website enrichment queue.
+- **Website Enrichment** (inside `specs/enrichment-engine/`) — Firecrawl-based crawl of `/`, `/about`, `/careers`, `/docs`, `/blog`, `/engineering`. Deterministic extraction of architecture signals, stack mentions, team signals.
+- **Profile Composer** (inside `specs/enrichment-engine/`) — merges X-sourced data and website-sourced data into the final `EnrichedProfile`, computes per-cell competency matches using the loaded fingerprint, attaches evidence snippets with provenance.
 
-- **Two-layer matcher:** deterministic templates catch the high-precision majority; an optional Claude-based secondary classifier handles the long tail of non-template funding announcements. The LLM layer runs *only* on posts that contain competency vocabulary but did not match any template — bounded cost.
-- **Language:** English-only filter. Non-English tweets are rejected at the source.
-- **Rate limits:** X API access is rate-limited; the listener must respect quotas. Use cached recent-search rather than filtered streaming if stream cost is prohibitive.
-- **[ASSUMPTION — confirm in review]** X API tier: **"Basic" ($100/month)** is the target tier. Free tier is too restrictive; Pro tier is over-scoped. Basic gives ~10K tweets/month retrieval, sufficient for a vocabulary-filtered niche listener.
+### 7.3 Staged pre-filter (load-bearing design)
 
-### 7.4 Spec Location
+The X-signal firehose is too dense to enrich every match. Filters run in order, cheapest and highest-rejection-yield first. **Anti-vocabulary exclusion runs before primary vocabulary density** because retail/speculation noise in Web3-X is categorically disqualifying regardless of what other signals are present — a tweet containing "airdrop" is not a funding-announcement signal we care about even if it also contains "multisig."
 
-`specs/x-funding-listener/spec.md`. Expected AC count: ~20-25.
+1. **Tweet template match** (deterministic regex) — does this tweet resemble a funding announcement? Free. Reject immediately if no template fires.
+2. **Anti-vocabulary exclusion** (deterministic) — does the tweet or the author's bio contain any term from `core-web3-anti-signals` or cell-level anti-signals (`airdrop`, `100x`, `degen`, `diamond hands`, `moonshot`, etc.)? Free. **Immediate reject if any anti-signal fires**, regardless of what primary signals may also be present. Retail noise disqualifies.
+3. **Primary vocabulary density** (deterministic) — does the tweet or bio contain ≥N terms from the core primary signals or from at least one cell's primary signals? Free. Reject if density threshold not met.
+4. **Company resolution** (cheap API call or cache) — can we resolve the company to a website URL? Minor cost. Reject if unresolvable.
+5. **Website enrichment** (Firecrawl) — full crawl + extraction. Only runs on candidates that pass filters 1-4.
 
----
+This staging is why Module A stays within budget even at Web3-X volumes. The first three filters are free and do the bulk of noise rejection; filter 4 is cheap; expensive Firecrawl enrichment runs only on candidates that have already survived a gauntlet of free checks.
 
-## 8. Stage 2: Website Qualifier
+A note on filter 2's position: it is the single highest-yield rejection in Web3-X. At volumes of 5-10 tweets per second carrying competency-adjacent vocabulary, the overwhelming majority are retail speculation, not institutional-grade buying signals. Running this filter before primary-density means we never waste compute on density calculations for tweets that were going to be rejected anyway. Empirically, this ordering is expected to drop 80%+ of incoming tweets before any further processing.
 
-### 8.1 Responsibility
+### 7.4 Firecrawl-specific configuration
 
-For each `FundingSignal`, fetch and analyze the company's website to produce a `QualifiedCandidate` with competency cell scores and hard-gate signals. This is the precision-biased stage.
+- **Endpoint:** Firecrawl's `/scrape` and `/crawl` REST API, via the Node SDK.
+- **JS rendering:** enabled by default.
+- **Content format:** Markdown.
+- **Credit budget:** ~$80/month mid-tier, comfortably fits Phase 1 volumes (est. <1000 pages/week under the staged pre-filter).
+- **Wrapped behind `PageFetcher` interface** (see §7.5) so Firecrawl can be swapped without touching extraction logic.
+- **Success criteria for continued use:** page-fetch success rate ≥95% on encountered sites; median latency <15s/page; cost per `EnrichedProfile` < $0.50. Degradation triggers alternatives evaluation.
 
-### 8.2 Core Computation
+### 7.5 `PageFetcher` interface
 
-1. **Crawl plan** — for each candidate, fetch a prioritized page list:
-   - `/` (homepage)
-   - `/about` (company context, team size hints)
-   - `/careers` or `/jobs` (**elevated priority** — densest architectural-fit signal via job listings)
-   - `/docs` or docs.[company].com (if present)
-   - `/blog`, `/engineering` (most recent 3-5 posts only)
-   - Any "technology" or "architecture" pages linked from `/about`
-   - **Cap: 10 pages per company** to bound cost and latency.
-2. **Fetch via `PageFetcher` interface** (see §8.4). V1 implementation: Firecrawl.
-3. **Extraction pass 1 — deterministic:**
-   - Competency vocabulary matching per cell (keyword hit counts, context windows).
-   - Tech-stack extraction from `/careers` (regex and list-parsing for Rust, Solidity, FunC, Node, Kubernetes, HSM, etc.).
-   - Team-size detection ("team of N", "our X employees", first-5-hires language).
-   - Stage-signal detection ("just raised", "Series A", "hiring our first...").
-   - Anti-signal detection ("cheap developers", "outstaffing", "looking for vendor").
-4. **Extraction pass 2 — LLM (conditional):**
-   - Runs only when Pass 1 produces **ambiguous** results (defined operationally as: any cell score in the 0.3–0.7 uncertainty band after Pass 1).
-   - Sends cleaned Markdown of the most-relevant pages to Claude with a structured output schema (Zod-defined) asking for per-cell relevance scores + evidence snippets.
-   - Results overwrite Pass 1 scores for the affected cells with `extractionMethod: "llm"`.
-5. **Aggregate scoring** — combine per-cell scores into an `aggregateScore` for review-queue prioritization. Weighting: multi-cell matches score higher than single-cell matches at equal per-cell strength.
-6. **Emission** of `QualifiedCandidate` to the review queue.
-
-### 8.3 Validation Strategy
-
-Before Stage 2 goes live, it is validated against the **65-company labeled dataset** as ground truth:
-
-- Run Stage 2 against the known websites of all 65 companies.
-- Compare the qualifier's tier-prediction (based on aggregateScore thresholds) against the team's actual A/B/C assignments.
-- **Target: ≥80% tier-agreement.**
-- Specifically examine disagreements as calibration cases (especially Tier C rejections like Celebratix, Indicio, Warden — the qualifier should correctly classify these as low-match).
-
-The validation fixture set (captured `FetchedPage` outputs for all 65) becomes the permanent test corpus for regression testing.
-
-### 8.4 `PageFetcher` Interface
-
-Firecrawl is the v1 implementation but is wrapped behind an interface so the rest of Stage 2 is Firecrawl-agnostic:
+Firecrawl is the v1 implementation but is wrapped so the rest of Module A is Firecrawl-agnostic:
 
 ```typescript
 interface PageFetcher {
@@ -348,130 +438,220 @@ interface PageFetcher {
 
 interface FetchedPage {
   url: string;
-  markdown: string;           // cleaned, LLM-ready
+  markdown: string;                    // cleaned, LLM-ready
   title: string;
   metadata: Record<string, unknown>;
   fetchedAt: Date;
 }
 ```
 
-Concrete implementations:
-- `FirecrawlFetcher` — v1, calls Firecrawl API, maps response to `FetchedPage`.
-- `FixturePageFetcher` — testing, loads `FetchedPage` from captured JSON fixtures. **Primary test dependency for Stage 2 tests.** No network.
-- Future: `PlaywrightFetcher`, `MultiSourceFetcher` (fallback chain), `JinaReaderFetcher`.
+Concrete implementations in Phase 1:
 
-### 8.5 Firecrawl-Specific Configuration
+- `FirecrawlFetcher` — v1 production path, calls Firecrawl via Node SDK, maps to `FetchedPage`.
+- `FixturePageFetcher` — loads from `data/fixtures/pages/` JSON. **Primary test dependency** for Module A. No network.
 
-- **Endpoint:** Firecrawl's `/scrape` or `/crawl` REST API (Node SDK available).
-- **JS rendering:** Enabled by default.
-- **Content format:** Markdown (not HTML or raw).
-- **Credit budget:** **[ASSUMPTION]** Mid-tier plan at ~$80/month, covering ~2000 page fetches. Monitored monthly.
-- **Success criteria for continued use:** page-fetch success rate ≥95% on validation set; median latency < 15s/page; cost per `QualifiedCandidate` < $0.50. Degradation triggers alternatives evaluation.
+Future (post-Phase 1 if needed): `PlaywrightFetcher`, `MultiSourceFetcher` (fallback chain), `JinaReaderFetcher`.
 
-### 8.6 Spec Location
+### 7.6 Spec locations
 
-`specs/website-qualifier/spec.md`. Expected AC count: ~30-40 (largest spec in the pipeline).
+- `specs/enrichment-engine/spec.md` — Module A orchestrator + Website Enrichment + Profile Composer.
+- `specs/x-signal-source/spec.md` — the X-specific sub-module.
+- `specs/enriched-profile/spec.md` — the output contract schema (dependency of both above).
 
 ---
 
-## 9. Stage 3: Human Review Queue
+## 8. Phase 1 Review Queue
 
-### 9.1 Responsibility
+### 8.1 Responsibility
 
-Present `QualifiedCandidate`s to a human reviewer in priority order, support efficient Crunchbase-based verification, and capture the reviewer's tier decision as a `TieredLead`.
+Present each `EnrichedProfile` to the reviewer in priority order. Capture (a) adequacy judgment + missing evidence types, (b) tier decision + reasons, (c) Crunchbase cross-reference during review. Measure progress against Phase 1 DoD.
 
-### 9.2 Core Mechanics
+### 8.2 Reviewer workflow (CLI-driven)
 
-- **Queue state:** `pending | inReview | tiered | dismissed`.
-- **Priority ordering:** by `aggregateScore` descending, then by Stage 1 `discoveredAt` ascending (older freshness-value first within the same score band).
-- **Reviewer UI:** shows the candidate's Stage 1 evidence (tweet), Stage 2 evidence (per-cell scores + supporting snippets), and direct links to their website and the Crunchbase search URL for the company name.
-- **Capture fields** (what the reviewer fills in):
-  - `tier`: A / B / C
-  - `tierReason`: required free-text
-  - `crunchbaseConfirmed`: did you find it in Crunchbase? Actual amount / stage / date?
-  - `downgradeReasons` (if not A): from a controlled vocabulary (see §9.3) plus free-text.
-- **Output:** `TieredLead` written to persistence; Tier A and Tier B feed the outreach queue, Tier C are archived for future fingerprint training.
+```bash
+npm run review:next              # opens next queued profile
+npm run review:stats             # progress toward DoD: N/40 profiles, adequacy rate
+npm run review:export            # dumps ReviewAnnotation records for analysis
+```
 
-### 9.3 Downgrade Reason Taxonomy
+The `review:next` command displays:
 
-From analysis of the existing 65-company dataset, downgrade reasons fall into a small controlled vocabulary:
+- Compact summary of the `EnrichedProfile` (company, funding claim, cell matches, top evidence snippets).
+- Direct terminal links: website, X profile, Crunchbase search URL.
+- Interactive prompts for adequacy judgment, missing-evidence tags, tier, reasons, Crunchbase-check result.
+- Writes `ReviewAnnotation` to persistence.
 
-- `competency_mismatch` — no matrix cell matches (most common Tier C).
-- `wrong_vertical` — competency matches but wrong industry (e.g., Indicio — DID for aviation).
-- `business_risk_override` — reputation, legal, or integrity concern (e.g., Warden — token crashed).
-- `stage_too_late` — already scaled, in-house team (e.g., Flying Tulip — $275M, own CISO).
-- `stage_too_early` — sub-$2M, too little budget for MVA engagement.
-- `founder_unreachable` — no identifiable founder/CTO, or not reachable via LinkedIn 2nd-degree network.
-- `acquired_or_state_backed` — decision authority elsewhere (e.g., Future → H100, Neng Lian → state capital).
+### 8.3 Persistence
 
-These codes feed analytics and help tune upstream stages over time.
+**[ASSUMPTION — confirm in review]** SQLite via `better-sqlite3`, stored under `data/review-queue.db`. Rationale: zero-config, single-file, matches solo-operator scale for Phase 1; Postgres is overkill until multi-reviewer becomes real. If Phase 1 review reveals need for concurrent review or web UI, migrate at that point.
 
-### 9.4 Lead-Time Measurement
+### 8.4 Phase 1 DoD measurement
 
-When the reviewer checks Crunchbase and either finds or does not find the round:
+The `review:stats` command computes:
 
-- **Found and date available:** compute `leadTimeDays = claimedAt (X) – actualDate (Crunchbase)`. Positive = X was faster.
-- **Not yet in Crunchbase:** log `foundInCrunchbase: false` with `reviewedAt` timestamp. The reviewer can re-check on a later queued reminder to capture the delayed indexing.
+- Total profiles reviewed.
+- Adequacy rate (% of profiles where `profileAdequate = true`).
+- Distribution of `missingEvidenceTypes` across inadequate profiles.
+- Tier distribution (A/B/C counts among adequately-reviewable profiles).
 
-Aggregate these measurements monthly. **The X stage is justified if and only if median `leadTimeDays` ≥ 14 days** (see §2 foundation window rationale). If median lead time is low over the first 3 months of operation, the X stage is a candidate for replacement or deprioritization.
+Phase 1 exits when the DoD criteria from §5.4 are met. No earlier.
 
-### 9.5 Spec Location
+### 8.5 Iteration loop
 
-`specs/review-queue/spec.md`. Expected AC count: ~15-20.
+When a profile is marked inadequate, the missing-evidence annotation aggregates into the enrichment backlog. Example workflow:
+
+- 20 profiles reviewed, 12 adequate (60% — below DoD bar).
+- Of the 8 inadequate, 5 are tagged `missing_architecture_signal`.
+- Backlog item: improve architecture extraction. Possible causes — not crawling deep enough, missing docs subdomains, regex gaps for bare-metal/HSM vocabulary.
+- Fix enrichment, regenerate profiles for those companies (raw content is retained; re-enrichment is cheap re-extraction without re-crawl).
+- Re-review.
+- Continue until adequacy rate ≥80% and no single failure mode dominates >40%.
+
+### 8.6 Lead-time measurement
+
+When the reviewer's Crunchbase check finds a confirmed round, compute `leadTimeDays = claimedAt (X) - actualDate (Crunchbase)`. Persist on `EnrichedProfile.funding.confirmed`. Aggregate monthly. **The X stage is justified if and only if median `leadTimeDays` ≥ 14 days** over the Phase 1 review set. This is a secondary measurement — not a Phase 1 DoD condition, but a foundational-thesis check that informs whether to continue investing in X specifically.
+
+### 8.7 Spec location
+
+`specs/review-queue/spec.md`. Expected AC count: ~20-25 including the Phase 1 DoD AC.
 
 ---
 
-## 10. Competency Fingerprint
+## 9. Scoring Agent (Module B) — Phase 2
+
+**Out of scope for this document beyond the section you're reading.**
+
+Module B consumes `EnrichedProfile`, applies deterministic rule-based scoring against the competency fingerprint and hard gates, produces a tier prediction with reasoning. LLM-assisted scoring is a secondary pass on ambiguous cases only (not primary mechanism). Validated against the 65-company labeled dataset with a target ≥80% tier-agreement on known inputs before going live.
+
+Phase 2 work begins when Phase 1 DoD is met. The architecture addendum for Module B will be written at that point, informed by learnings from the 25-40 reviewed profiles — specifically the patterns in `MissingEvidenceType` frequencies, the tier distributions observed, and edge cases identified during review.
+
+This deferral is deliberate. Building Module B in parallel with Module A would require guessing at the scoring rubric before the data shape is known. Guesses compound. One module at a time.
+
+---
+
+## 10. Fingerprint Authoring — Human-in-the-Loop, AI-Assisted
 
 ### 10.1 Responsibility
 
-Turn the typed `ICPReference` (matrix + 65-company dataset + reference clients) into the per-cell vocabulary and pattern structures consumed by Stages 1 and 2.
+Produce the versioned JSON artifacts under `data/fingerprints/` that Module A consumes. The fingerprint is as much FinScout's IP as the sales-factory scoring rubric — it encodes the domain expertise that distinguishes a Tier A infrastructure signal from noise.
 
-### 10.2 Computation
+### 10.2 Core+Cell inheritance model
 
-1. For each competency cell, collect:
-   - Keyword markers from the matrix definition (§3).
-   - Tech-stack mentions from Tier A product descriptions assigned to that cell.
-   - Tech-stack mentions from reference clients (weighted 2×).
-2. Compute **term frequency × discriminative power**: a term is more valuable when it appears in Tier A of a cell *and does not appear* in Tier C examples. This naturally surfaces the terms that distinguish Avenia's profile from Celebratix's.
-3. Output per-cell:
-   - `primaryVocabulary`: top 20-30 discriminative terms.
-   - `secondaryVocabulary`: 30-50 supporting terms.
-   - `antiVocabulary`: terms associated with Tier C (useful as negative evidence).
-4. Persist to `data/fingerprint.json` (or similar), versioned, regenerated when the ICPReference changes.
+```
+data/fingerprints/
+├── core-web3-signals.json         # universal B2B quality markers
+├── core-web3-anti-signals.json    # universal retail/speculation noise
+└── cells/
+    ├── defi-&-yield.json          # extends core
+    ├── trading.json               # extends core
+    ├── infrastructure.json        # extends core
+    ├── security.json              # extends core
+    └── payment-rails.json         # extends core
+```
 
-### 10.3 Spec Location
+**Core files** contain vocabulary universal across Web3/crypto targeting:
+- *Primary signals:* terms that mark B2B institutional quality regardless of vertical (e.g., `multisig`, `audit`, `formal verification`, `settlement finality`).
+- *Anti-signals:* terms that mark retail/speculation noise (e.g., `airdrop`, `100x`, `degen`, `diamond hands`, `moonshot`, `wen token`, `ape in`).
 
-`specs/competency-matrix/spec.md` (includes fingerprint computation). Expected AC count: ~20.
+**Cell files** extend the core with vertical-specific vocabulary:
+- *Primary signals:* cell-specific architectural terms (e.g., for DeFi & Yield: `TVL`, `liquidity provisioning`, `flash loan resistance`; for Infrastructure: `bare-metal cores`, `cross-chain settlement`; for Security: `HSM integration`, `institutional custody`).
+- *Anti-signals:* cell-specific noise or wrong-vertical markers (e.g., for Security: `aviation`, `airline` — wrong-vertical markers that match Security vocabulary but indicate Tier C per the Indicio case in the 65-company dataset).
+
+Resolution logic at runtime: `resolveFingerprint(cell)` loads the cell file, resolves `extends` references, merges (cell-specific overrides core on term collision), returns composed fingerprint. Zod-validated transformation.
+
+### JSON schema (sketch)
+
+```json
+{
+  "version": "1.0",
+  "lastCurated": "2026-04-22",
+  "curator": "dmitriy",
+  "cell": "DeFi & Yield",
+  "extends": ["core-web3-signals", "core-web3-anti-signals"],
+  "primarySignals": [
+    { "term": "TVL", "weight": 1.2, "notes": "total value locked" },
+    { "term": "liquidity provisioning", "weight": 1.5 },
+    { "term": "flash loan resistance", "weight": 2.0, "notes": "strong Tier A signal" }
+  ],
+  "antiSignals": [
+    { "term": "rugpull", "weight": 1.0 }
+  ]
+}
+```
+
+Term weights are in the range `(0, 3]`. Weights are used in Phase 1 only for reviewer-facing match scoring display; in Phase 2, Module B may use them as inputs to automated tier prediction. Final semantics of weights at scoring time are deferred to the Phase 2 architecture addendum.
+
+Inheritance resolution rules:
+
+- `extends` is an array of filenames (without `.json`) of other fingerprint files. Resolution is shallow (one level) in Phase 1; multi-level inheritance is explicitly not supported unless a need emerges.
+- Core files have no `extends` field. Cell files must have `extends` including at least `core-web3-signals` and `core-web3-anti-signals`.
+- On term collision between core and cell, the cell's entry wins — allowing per-cell weight overrides or note enrichment without modifying core.
+- On term collision between two core files (should not happen in practice), resolution fails validation; `fingerprint:validate` catches this.
+
+### 10.3 CLI-driven curation workflow
+
+Phase 1 workflow is solo-me, CLI-driven:
+
+```bash
+npm run fingerprint:suggest --cell=defi-&-yield
+    # AI-assisted extraction from 65 companies + reference clients.
+    # Produces proposed vocabulary additions as a staging JSON file.
+
+npm run fingerprint:review --cell=defi-&-yield
+    # Interactive review of proposed terms. Accept/reject each.
+    # Approved terms merge into the cell file.
+
+npm run fingerprint:compile
+    # Resolves all extends, validates against Zod, produces runtime artifact.
+
+npm run fingerprint:validate
+    # Sanity checks: no duplicates, no contradictions between primary and anti,
+    # all cells reference existing core files, all terms have weight in (0, 3].
+```
+
+When Tolya or other curators join later, the JSON artifacts become the Git PR review surface. No architectural change needed — just process change.
+
+### 10.4 Reference-client weighting
+
+During `fingerprint:suggest`, the AI extracts vocabulary candidates from both the 65-company Crunchbase set and the reference clients. Reference-client occurrences weight higher in ranking (e.g., 2×) because they are positive confirmed outcomes. However, **final acceptance of any term is manual** — the weighting only affects ranking in the reviewer's queue, not inclusion.
+
+### 10.5 Spec location
+
+`specs/fingerprint/spec.md`. Expected AC count: ~25-30 covering schema, resolution, CLI commands, and validation rules.
 
 ---
 
 ## 11. Validation, Measurement, and Feedback
 
-### 11.1 Pre-Launch Validation (Before Stage 1 Goes Live)
+### 11.1 Phase 1 validation (in force)
 
-- Stage 2 run against all 65 labeled companies.
-- Tier-agreement computed and reviewed.
-- Specific failure cases (Tier C false positives, Tier A false negatives) analyzed and used to adjust competency vocabulary or scoring thresholds.
-- Threshold: ≥80% tier-agreement before Stage 1 is connected.
+- Live X signal processed by Module A.
+- Reviewer reviews 25-40 resulting profiles.
+- Adequacy rate ≥80%; no single failure mode >40%.
+- Lead-time measurement (§8.6) collected throughout.
 
-### 11.2 Continuous Measurement
+### 11.2 Continuous measurement during Phase 1
 
-Once live, the pipeline logs and reports monthly:
+The review queue produces:
+- Daily/weekly adequacy rate trend.
+- `MissingEvidenceType` frequency distribution.
+- Tier distribution (informational only — no Module B yet).
+- Lead-time distribution.
+- Per-cell match frequency (which cells are producing the most surfaced candidates).
+- Firecrawl cost per EnrichedProfile.
 
-- **Stage 1 output rate** (FundingSignals/week).
-- **Stage 2 pass rate** (QualifiedCandidate / FundingSignal).
-- **Stage 3 tier distribution** (A/B/C percentages of reviewed candidates).
-- **Review queue latency** (time from qualified → reviewed).
-- **Lead time over Crunchbase** (median, from §9.4).
-- **Cost per Tier A/B output** (amortized Firecrawl + X API + Claude costs).
-- **Per-cell hit rates** (which matrix cells are producing the most Tier A, and which are starving).
+### 11.3 Phase 2 validation (future)
 
-### 11.3 Feedback Loop
+When Module B is built:
+- Run against the 65-company labeled set.
+- Target: ≥80% tier-agreement.
+- Specific examination of Tier C false-positive cases (Celebratix, Indicio, Warden) as calibration.
 
-- **Every 3 months:** revisit the competency fingerprint. New Tier A acquisitions should be added to the training set.
-- **Every 6 months:** review downgrade-reason distribution. If a particular code (e.g., `wrong_vertical`) is dominant, that's a signal Stage 2 needs more vertical-awareness.
-- **Ad-hoc:** whenever an outreach succeeds and closes, trace back through the pipeline logs. Was it surfaced cleanly? Which signals led to the match? Feed back into fingerprint.
+### 11.4 Feedback loops
+
+- **During Phase 1:** reviewer annotations drive enrichment-improvement backlog. Tight loop, days-scale.
+- **After Phase 1 exits:** fingerprint may be updated based on patterns observed. New Tier A acquisitions are added to the fingerprint-training set over time.
+- **Every 3-6 months (post-Phase 2):** revisit the fingerprint wholesale. Review downgrade-reason distributions. Ad-hoc: when outreach succeeds, trace back through pipeline logs to confirm the match made sense.
 
 ---
 
@@ -479,110 +659,142 @@ Once live, the pipeline logs and reports monthly:
 
 - **Crunchbase programmatic scraping.** Not ToS-legitimate. Used only via human review.
 - **LinkedIn scraping for discovery.** Not ToS-legitimate. LinkedIn reserved for outreach.
-- **Automated tier-final decisions.** Human review is a feature, not a bug.
-- **Cold LLM-only scoring.** LLM extraction is a second pass on ambiguous candidates only, not the primary scoring mechanism.
+- **Automated tier-final decisions.** Human review is a Phase 1 feature (the point) and will remain so even in Phase 2 where Module B's role is proposal, not final decision.
+- **Module B / Scoring Agent in Phase 1.** Explicitly deferred until Phase 1 DoD is met.
+- **Cold LLM-only scoring.** Even in Phase 2, LLM extraction is a conditional second pass, not the primary scoring mechanism.
 - **Real-time outreach triggering.** Outreach is a separate system; this pipeline's output is a queue, not an action trigger.
 - **Multi-language content processing.** English only.
-- **Serving FinScout's existing `/v1/discovery/evaluate` API.** That endpoint is currently served by legacy `src/services/discoveryEngine.ts`. Re-wiring to the new pipeline is a separate migration (see §13).
+- **Multi-reviewer workflows / web UI.** CLI-first, solo-me in Phase 1; Git PR-flow when collaboration starts.
+- **Serving FinScout's existing `/v1/discovery/evaluate` API.** That endpoint is currently served by legacy `src/services/discoveryEngine.ts`. Re-wiring to the new pipeline is a separate migration.
+- **Automated LinkedIn enrichment.** Intentionally deferred. A future enhancement may integrate a ToS-shifted service (e.g., Anysite, Wiza) to automate enrichment during review, but only after v1 pipeline is running and manual LinkedIn-review is measured as a real bottleneck.
 
 ---
 
 ## 13. Relationship to Existing FinScout Architecture
 
-The pipeline lives inside the FinScout codebase. Module layout:
+Module layout:
 
 ```
 finscout-ai-agents/
 ├── src/
-│   ├── sales-factory/              # EXISTING — iDECP, unchanged
-│   ├── discovery/                  # EXTENDED — new modules added
-│   │   ├── XDiscoverySource.ts     # EXISTING
-│   │   ├── XFundingListener.ts     # NEW — Stage 1
-│   │   ├── WebsiteQualifier.ts     # NEW — Stage 2
-│   │   ├── ReviewQueue.ts          # NEW — Stage 3
-│   │   ├── CompetencyFingerprint.ts # NEW
-│   │   └── sources/
-│   │       ├── PageFetcher.ts      # NEW — interface
-│   │       ├── FirecrawlFetcher.ts # NEW — Firecrawl impl
-│   │       └── FixturePageFetcher.ts # NEW — test impl
+│   ├── sales-factory/                # EXISTING — iDECP, unchanged
+│   ├── discovery/                    # EXISTING — XDiscoverySource
+│   │                                 #   (retroactive spec pending)
+│   ├── enrichment/                   # NEW — Module A
+│   │   ├── EnrichmentEngine.ts
+│   │   ├── ProfileComposer.ts
+│   │   ├── website/
+│   │   │   ├── WebsiteEnricher.ts
+│   │   │   ├── extractors/           # architecture, team, funding, product
+│   │   │   └── sources/
+│   │   │       ├── PageFetcher.ts       # interface
+│   │   │       ├── FirecrawlFetcher.ts  # v1 impl
+│   │   │       └── FixturePageFetcher.ts
+│   │   ├── x-signal/
+│   │   │   ├── XSignalSource.ts
+│   │   │   ├── templateMatcher.ts
+│   │   │   └── companyResolver.ts
+│   │   └── *.test.ts
+│   ├── fingerprint/                  # NEW — Fingerprint authoring + runtime
+│   │   ├── FingerprintLoader.ts
+│   │   ├── FingerprintAuthor.ts
+│   │   ├── vocabularyExtractor.ts    # AI-assisted suggestion
+│   │   ├── cli/
+│   │   │   ├── suggest.ts
+│   │   │   ├── review.ts
+│   │   │   ├── compile.ts
+│   │   │   └── validate.ts
+│   │   └── *.test.ts
+│   ├── review-queue/                 # NEW — Phase 1 review workflow
+│   │   ├── ReviewQueue.ts
+│   │   ├── persistence.ts
+│   │   ├── cli/
+│   │   │   ├── next.ts
+│   │   │   ├── stats.ts
+│   │   │   └── export.ts
+│   │   └── *.test.ts
 │   ├── schema/
-│   │   ├── lead.schema.ts          # EXISTING — reused
-│   │   ├── fundingSignal.ts        # NEW
-│   │   ├── qualifiedCandidate.ts   # NEW
-│   │   └── tieredLead.ts           # NEW
-│   └── services/                   # LEGACY — untouched this phase
+│   │   ├── lead.schema.ts            # EXISTING
+│   │   ├── enrichedProfile.ts        # NEW — THE contract
+│   │   ├── reviewAnnotation.ts       # NEW
+│   │   ├── fingerprint.ts            # NEW
+│   │   └── ...
+│   └── services/                     # LEGACY — untouched this phase
 ├── specs/
-│   ├── sales-factory/              # EXISTING
-│   ├── discovery/                  # NEW — retroactive spec for XDiscoverySource
-│   ├── competency-matrix/          # NEW
-│   ├── x-funding-listener/         # NEW
-│   ├── website-qualifier/          # NEW
-│   └── review-queue/               # NEW
+│   ├── sales-factory/                # EXISTING
+│   ├── discovery/                    # NEW — retroactive for XDiscoverySource
+│   ├── enriched-profile/             # NEW — the contract
+│   ├── fingerprint/                  # NEW
+│   ├── enrichment-engine/            # NEW — Module A orchestrator
+│   ├── x-signal-source/              # NEW — X sub-module
+│   └── review-queue/                 # NEW — Phase 1 DoD
 └── data/
-    ├── icp-reference.json          # 65-company dataset + reference clients
-    ├── fingerprint.json            # Generated competency fingerprint
+    ├── icp-reference.json            # 65-company dataset + reference clients
+    ├── fingerprints/                 # Core + per-cell (versioned)
+    ├── review-queue.db               # SQLite (Phase 1 state)
     └── fixtures/
-        └── pages/                  # Captured page fixtures for validation
+        ├── pages/                    # Captured page fixtures for tests
+        └── tweets/                   # Captured tweet fixtures for tests
 ```
 
-### 13.1 Retroactive Spec for `XDiscoverySource`
+### 13.1 Retroactive spec for `XDiscoverySource` (unchanged from v0.1)
 
-The existing `XDiscoverySource.ts` has 18 passing tests but no spec. Before Stage 1 is built, write `specs/discovery/spec.md` retroactively to bring the existing module under the iDECP protocol umbrella. This closes the protocol-compliance gap and establishes the conventions Stage 1's spec will follow.
+The existing `XDiscoverySource.ts` has 18 passing tests but no spec. Before Module A is built, write `specs/discovery/spec.md` retroactively to bring the existing module under the iDECP protocol umbrella. This closes the protocol-compliance gap and establishes the conventions the new specs will follow. This is a separate agent prompt (not the v0.2 doc land).
 
-### 13.2 Legacy/iDECP Fork
+### 13.2 Legacy/iDECP fork (unchanged from v0.1)
 
-The pipeline builds on the iDECP side (`src/sales-factory/`, `src/discovery/`) and does not attempt to re-wire the existing Express endpoints (`/v1/discovery/evaluate`, `/v1/research/synthesize`). The endpoints stay on legacy `src/services/*` until a separate migration effort. **Expect the iDECP side to grow "built but not wired" while this effort proceeds**; accept this tradeoff consciously.
+The pipeline builds on the iDECP side and does not attempt to re-wire the existing Express endpoints. Accept the "built but not wired" surface during Phase 1/2; migration of `/v1/discovery/evaluate` is a separate future effort.
 
 ---
 
-## 14. Sequencing and Dependencies
+## 14. Sequencing and Dependencies (Phase 1)
 
-The specs are written and implemented in this order:
+Phase 1 specs are written and implemented in this order:
 
-1. **`specs/discovery/spec.md`** (retroactive, for existing `XDiscoverySource`) — closes protocol gap.
-2. **`specs/competency-matrix/spec.md`** — no dependencies; defines the spine.
-3. **`specs/website-qualifier/spec.md`** — depends on competency-matrix; built and validated against 65-company set *before* any Stage 1 work.
-4. **`specs/x-funding-listener/spec.md`** — depends on competency-matrix; connects to website-qualifier once qualifier is validated.
-5. **`specs/review-queue/spec.md`** — can be written in parallel with qualifier; connects last.
+1. **`specs/discovery/spec.md`** (retroactive, for existing `XDiscoverySource`). Closes protocol gap.
+2. **`specs/enriched-profile/spec.md`** — the contract. No dependencies. Everything else depends on it.
+3. **`specs/fingerprint/spec.md`** — authoring workflow + runtime resolution. Depends on matrix (§3) definition.
+4. **`specs/x-signal-source/spec.md`** — depends on enriched-profile + fingerprint.
+5. **`specs/enrichment-engine/spec.md`** — Module A orchestrator + website enrichment. Depends on x-signal-source + fingerprint + enriched-profile.
+6. **`specs/review-queue/spec.md`** — Phase 1 DoD measurement. Depends on enriched-profile.
 
-Stage 2 validation is the **gate** between "pipeline exists on paper" and "pipeline is running in production." Do not launch Stage 1 until Stage 2 hits the 80% tier-agreement target on the validation set.
+The retroactive XDiscoverySource spec is the smallest first move (agent prompt already scoped). After that, `enriched-profile` is the highest-leverage spec to write next — it's the contract, and writing it forces all remaining design decisions to surface.
 
 ---
 
 ## 15. Open Questions (For Review)
 
-These are the **[ASSUMPTION]**-marked items collected for explicit confirmation:
+Reduced from v0.1's ten items after most resolved in v0.2 drafting:
 
-1. **Cluster 1/2/3 ↔ Competency Matrix relationship** (§3.1): confirmed orthogonal? Clusters are market-side; matrix is supply-side?
-2. **Reference clients as fingerprint seeds** (§3.2): confirmed yes, parallel to the 65-company ICP?
-3. **Deployment model** (§2): Docker Compose matching existing FinScout pattern?
-4. **Budget ceiling** (§2): ~$150/month total external services acceptable?
-5. **X API tier** (§7.3): Basic ($100/mo) appropriate?
-6. **Firecrawl pricing tier** (§8.5): ~$80/mo mid-tier acceptable?
-7. **Historical X-vs-Crunchbase lead time**: any anecdotal data points available, or measure from day one?
-8. **Reviewer identity** (§9.2): one person, a rotating role, or multiple reviewers? Affects the review UI's authentication / attribution needs.
-9. **Persistence layer** for the pipeline's state: SQLite in the Docker volume, or Postgres, or something else matching existing FinScout patterns?
-10. **Who owns the `ICPReference` data**: Is there a canonical English spreadsheet that will be imported, or does the team re-author the 65 records directly in the new schema?
+1. **Cluster 1/2/3 ↔ Competency Matrix relationship** (§3.1): still flagged as [ASSUMPTION] — confirm orthogonality or correct.
+2. **Deployment model** (§2): Docker Compose matching existing FinScout pattern — confirm.
+3. **Persistence layer for review queue** (§8.3): SQLite acceptable, or is there a reason to prefer Postgres or another store?
+4. **X API tier**: "Basic" ($100/mo) sufficient for Phase 1 volumes, or does Web3 volume warrant Pro? Re-examine after 1 week of live running.
+5. **Reviewer identity persistence**: the `reviewedBy` field — just `"dmitriy"` for Phase 1 as you said, but is there a convention for this already in the codebase?
+6. **Fixture corpus commit policy**: capturing live-run page outputs as test fixtures is valuable for regression, but may include captured-tweet content with author handles. Any PII/ToS considerations before committing these?
 
 ---
 
 ## 16. Success Criteria
 
-This architecture document is a success if:
+This architecture document v0.2 is a success if:
 
-- The four specs underneath it (`competency-matrix`, `website-qualifier`, `x-funding-listener`, `review-queue`) can be written without re-opening structural questions.
-- An implementer can explain the pipeline end-to-end from this document alone.
-- The validation strategy (Stage 2 against 65 labeled companies) is concrete enough to execute.
-- Open items are either resolved in review or explicitly deferred with a named owner.
+- The five Phase 1 specs listed in §14 can be written without re-opening structural questions.
+- An implementer can explain Phase 1 end-to-end from this document alone.
+- The Phase 1 DoD (§5.4) is concrete enough to execute and measure.
+- Open items (§15) are either resolved in review or explicitly deferred with named owner.
 
-The pipeline as a whole is a success when:
+Phase 1 as a whole is a success when:
 
-- 25 reviewable candidates/week are consistently reaching the review queue.
-- ≥70% of reviewed candidates become Tier A or Tier B.
-- Median lead-time over Crunchbase is ≥14 days.
-- The founder (or designated reviewer) spends ≤90 minutes/week on review.
-- Outreach throughput is the bottleneck, not discovery throughput.
+- Module A is running against live X signal.
+- 25-40 EnrichedProfiles have been reviewed.
+- ≥80% adequacy rate achieved.
+- No single `MissingEvidenceType` dominates >40% of failures.
+- Lead-time over Crunchbase measured (secondary, informational).
+- The reviewer (you) has concrete, data-driven intuition about the shape of the data Module B will consume.
+
+Only then does Phase 2 begin.
 
 ---
 
-*End of discovery-architecture.md v0.1*
+*End of discovery-architecture.md v0.2*
