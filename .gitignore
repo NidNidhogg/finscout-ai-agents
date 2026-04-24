@@ -3,6 +3,15 @@
 .claude/heal-logs/
 .claude/heal-failures/
 
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
 # Dependencies and build output
 node_modules/
 dist/
@@ -14,4 +23,4 @@ npm-debug.log*
 # Uncomment when needed:
 # data/fixtures/pages/*.json
 # data/fixtures/tweets/*.json
-# !data/fixtures/**/.gitkeep
+!data/fixtures/**/.gitkeep

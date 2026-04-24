@@ -38,11 +38,11 @@ export const CompetencyCellSchema = z.enum([
 ]);
 
 export const FundingStageSchema = z.enum([
-  "pre-seed",
+  "pre_seed",
   "seed",
-  "series-a",
-  "series-b",
-  "series-c",
+  "series_a",
+  "series_b",
+  "series_c",
   "growth",
   "other",
 ]);
