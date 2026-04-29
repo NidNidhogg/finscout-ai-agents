@@ -37,7 +37,7 @@ Out of scope: Module B (Scoring Agent), LinkedIn outreach, automated tier predic
 | `drop(id)` | `string` | `Promise<void>` | No | Updates one row in `queue_items` |
 | `getStats()` | — | `Promise<ReviewQueueStats>` | Yes | None |
 | `exportReviewed()` | — | `Promise<QueueItem[]>` | Yes | None |
-| `calculateDoDMetrics(annotations)` | `ReviewAnnotation[]` | `DoDMetrics` | Yes | None (pure) |
+| `calculateDoDMetrics(records)` | `ReviewedRecord[]` | `DoDMetrics` | Yes | None (pure) |
 
 ---
 
@@ -73,6 +73,11 @@ Rows are never deleted. `get()` returns items in any state.
 ### 3.2 Metrics Types
 
 ```typescript
+export interface ReviewedRecord {
+  profile: EnrichedProfile;
+  annotation: ReviewAnnotation;
+}
+
 export interface DoDMetrics {
   totalReviewed: number;
   adequacyRate: number;                                    // float [0, 1]
@@ -117,10 +122,10 @@ export function createReviewQueue(deps: ReviewQueueDeps): ReviewQueue;
 ### 3.4 MetricsCalculator
 
 ```typescript
-export function calculateDoDMetrics(annotations: ReviewAnnotation[]): DoDMetrics;
+export function calculateDoDMetrics(records: ReviewedRecord[]): DoDMetrics;
 ```
 
-Pure function: synchronous, no I/O, no side effects. Accepts the full set of `ReviewAnnotation` records for items with `status='reviewed'`. Used internally by `getStats()`.
+Pure function: synchronous, no I/O, no side effects. Accepts the full set of paired `ReviewedRecord` objects (each containing both the `EnrichedProfile` and its `ReviewAnnotation`) for items with `status='reviewed'`. Pairing is required so lead-time can be computed from `record.profile.funding.claimed.claimedAt` alongside `record.annotation.crunchbaseCheck.actualDate` without any additional DB access. Used internally by `getStats()`.
 
 ### 3.5 Error Classes
 
@@ -215,13 +220,13 @@ CREATE TABLE IF NOT EXISTS queue_items (
 
 ### 4.5 calculateDoDMetrics()
 
-- Pure function. Caller is responsible for fetching all reviewed annotations from the DB before calling.
-- `totalReviewed` = `annotations.length`.
-- `adequacyRate` = `annotations.filter(a => a.profileAdequate).length / totalReviewed`; returns `0` when `totalReviewed === 0`. `adequacyRatePct` = `adequacyRate × 100`.
-- `missingEvidenceDistribution`: counts each `MissingEvidenceType` across annotations where `profileAdequate === false`. All five enum values (`missing_tech_stack`, `missing_traction_signal`, `missing_founder_context`, `missing_architecture_signal`, `noise_false_positive`) are always present as keys, with count `0` if not observed.
-- `dominantFailureModeExceeds40Pct`: let `inadequateCount = annotations.filter(a => !a.profileAdequate).length`. If `inadequateCount === 0`, returns `false`. Otherwise returns `true` if any single distribution value `> inadequateCount × 0.40`.
-- `tierDistribution`: counts `'A'`, `'B'`, `'C'` across all supplied annotations. All three keys always present.
-- `leadTimeDays`: computed from annotations where `crunchbaseCheck.foundInCrunchbase === true` AND the annotation has `crunchbaseCheck.actualDate` AND the corresponding profile has `funding.claimed.claimedAt`. `median` is `null` when `values.length === 0`.
+- Pure function. Caller is responsible for fetching all reviewed `ReviewedRecord` pairs from the DB before calling.
+- `totalReviewed` = `records.length`.
+- `adequacyRate` = `records.filter(r => r.annotation.profileAdequate).length / totalReviewed`; returns `0` when `totalReviewed === 0`. `adequacyRatePct` = `adequacyRate × 100`.
+- `missingEvidenceDistribution`: counts each `MissingEvidenceType` across records where `annotation.profileAdequate === false`. All five enum values (`missing_tech_stack`, `missing_traction_signal`, `missing_founder_context`, `missing_architecture_signal`, `noise_false_positive`) are always present as keys, with count `0` if not observed.
+- `dominantFailureModeExceeds40Pct`: let `inadequateCount = records.filter(r => !r.annotation.profileAdequate).length`. If `inadequateCount === 0`, returns `false`. Otherwise returns `true` if any single distribution value `> inadequateCount × 0.40`.
+- `tierDistribution`: counts `'A'`, `'B'`, `'C'` across all supplied records' annotations. All three keys always present.
+- `leadTimeDays`: computed from records where `annotation.crunchbaseCheck.foundInCrunchbase === true` AND `annotation.crunchbaseCheck.actualDate` is present AND `profile.funding.claimed.claimedAt` is present. `median` is `null` when `values.length === 0`.
 - `isDoDMet` = `isVolumeThresholdMet && isAdequacyThresholdMet && !dominantFailureModeExceeds40Pct`.
 
 ### 4.6 CLI Commands (behavioral contracts)
@@ -273,7 +278,7 @@ CLI rendering and interactive input are implementation details and are not teste
 
 ### Group E: getStats & Schema Enforcement
 
-- AC-022: `getStats()` returns `ReviewQueueStats` with live `pendingCount`, `reviewedCount`, `droppedCount`, and `dod` computed by passing all reviewed annotations through `calculateDoDMetrics()`; dropped items are excluded from the `dod` input.
+- AC-022: `getStats()` returns `ReviewQueueStats` with live `pendingCount`, `reviewedCount`, `droppedCount`, and `dod` computed by passing all reviewed `ReviewedRecord` pairs (profile + annotation) through `calculateDoDMetrics()`; dropped items are excluded from the `dod` input.
 
 ---
 

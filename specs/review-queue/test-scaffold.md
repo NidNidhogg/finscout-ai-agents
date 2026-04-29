@@ -93,6 +93,35 @@ export function makeInadequateAnnotation(
   });
 }
 
+// Paired ReviewedRecord (profile + annotation) for use with calculateDoDMetrics().
+export function makeReviewedRecord(
+  profileIdOrProfile?: string | EnrichedProfile,
+  annotationOverrides: Partial<ReviewAnnotation> = {},
+): ReviewedRecord {
+  const profile =
+    typeof profileIdOrProfile === 'object' && profileIdOrProfile !== null
+      ? profileIdOrProfile
+      : makeProfile({ id: profileIdOrProfile ?? uuidv4() });
+  return {
+    profile,
+    annotation: makeAnnotation(profile.id, annotationOverrides),
+  };
+}
+
+// ReviewedRecord with profileAdequate=false and at least one missingEvidenceType.
+export function makeInadequateReviewedRecord(
+  profileIdOrProfile?: string | EnrichedProfile,
+  annotationOverrides: Partial<ReviewAnnotation> = {},
+): ReviewedRecord {
+  return makeReviewedRecord(profileIdOrProfile, {
+    profileAdequate: false,
+    missingEvidenceTypes: ['missing_tech_stack'],
+    tier: 'C',
+    tierReason: 'Insufficient product signals.',
+    ...annotationOverrides,
+  });
+}
+
 // Opens an isolated in-memory SQLite database for each test.
 export function makeInMemoryDb(): Database.Database {
   return new Database(':memory:');
@@ -338,7 +367,10 @@ describe('ReviewQueue.getStats()', () => {
 
 ```typescript
 import { calculateDoDMetrics } from '../DoDMetrics';
-import { makeAnnotation, makeInadequateAnnotation, makeProfile } from './__fixtures__/factories';
+import {
+  makeReviewedRecord,
+  makeInadequateReviewedRecord,
+} from './__fixtures__/factories';
 import { v4 as uuidv4 } from 'uuid';
 
 describe('calculateDoDMetrics()', () => {
@@ -361,20 +393,19 @@ describe('calculateDoDMetrics()', () => {
 
   describe('AC-013: adequacyRate calculation', () => {
     it('is 1.0 when all profiles are adequate', () => {
-      const ids = [uuidv4(), uuidv4(), uuidv4()];
-      const annotations = ids.map(id => makeAnnotation(id));
-      const metrics = calculateDoDMetrics(annotations);
+      const records = [uuidv4(), uuidv4(), uuidv4()].map(id => makeReviewedRecord(id));
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.adequacyRate).toBe(1);
       expect(metrics.adequacyRatePct).toBe(100);
     });
 
     it('is 0.5 when half are adequate', () => {
       const ids = [uuidv4(), uuidv4()];
-      const annotations = [
-        makeAnnotation(ids[0]),
-        makeInadequateAnnotation(ids[1]),
+      const records = [
+        makeReviewedRecord(ids[0]),
+        makeInadequateReviewedRecord(ids[1]),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.adequacyRate).toBe(0.5);
       expect(metrics.adequacyRatePct).toBe(50);
     });
@@ -386,68 +417,64 @@ describe('calculateDoDMetrics()', () => {
 
   describe('AC-014: volume and adequacy threshold flags', () => {
     it('isVolumeThresholdMet is false when totalReviewed < 25', () => {
-      const ids = Array.from({ length: 10 }, () => uuidv4());
-      const metrics = calculateDoDMetrics(ids.map(id => makeAnnotation(id)));
+      const records = Array.from({ length: 10 }, () => makeReviewedRecord());
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.isVolumeThresholdMet).toBe(false);
     });
 
     it('isVolumeThresholdMet is true when totalReviewed >= 25', () => {
-      const ids = Array.from({ length: 25 }, () => uuidv4());
-      const metrics = calculateDoDMetrics(ids.map(id => makeAnnotation(id)));
+      const records = Array.from({ length: 25 }, () => makeReviewedRecord());
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.isVolumeThresholdMet).toBe(true);
     });
 
     it('isAdequacyThresholdMet is false when adequacyRate < 0.80', () => {
-      const ids = [uuidv4(), uuidv4()];
-      const annotations = [makeAnnotation(ids[0]), makeInadequateAnnotation(ids[1])];
-      const metrics = calculateDoDMetrics(annotations);
+      const records = [makeReviewedRecord(), makeInadequateReviewedRecord()];
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.isAdequacyThresholdMet).toBe(false);
     });
 
     it('isAdequacyThresholdMet is true when adequacyRate >= 0.80', () => {
-      const ids = Array.from({ length: 5 }, () => uuidv4());
       // 4 adequate, 1 inadequate → 0.8 rate
-      const annotations = [
-        ...ids.slice(0, 4).map(id => makeAnnotation(id)),
-        makeInadequateAnnotation(ids[4]),
+      const records = [
+        ...Array.from({ length: 4 }, () => makeReviewedRecord()),
+        makeInadequateReviewedRecord(),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.isAdequacyThresholdMet).toBe(true);
     });
   });
 
   describe('AC-015: isDoDMet requires all three conditions', () => {
     it('is false when volume < 25 even if adequacy >= 0.80', () => {
-      const ids = Array.from({ length: 10 }, () => uuidv4());
-      const metrics = calculateDoDMetrics(ids.map(id => makeAnnotation(id)));
+      const records = Array.from({ length: 10 }, () => makeReviewedRecord());
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.isDoDMet).toBe(false);
     });
 
     it('is false when adequacy < 0.80 even if volume >= 25', () => {
-      const ids = Array.from({ length: 25 }, () => uuidv4());
       // 10 adequate, 15 inadequate → 40% adequate
-      const annotations = [
-        ...ids.slice(0, 10).map(id => makeAnnotation(id)),
-        ...ids.slice(10).map(id => makeInadequateAnnotation(id)),
+      const records = [
+        ...Array.from({ length: 10 }, () => makeReviewedRecord()),
+        ...Array.from({ length: 15 }, () => makeInadequateReviewedRecord()),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.isDoDMet).toBe(false);
     });
 
     it('is false when dominant failure mode exceeds 40% even if other conditions are met', () => {
       // 25 reviewed, 20 adequate (80% rate), 5 inadequate
       // 3 of 5 inadequate are missing_tech_stack → 60% > 40%
-      const ids = Array.from({ length: 25 }, () => uuidv4());
-      const annotations = [
-        ...ids.slice(0, 20).map(id => makeAnnotation(id)),
-        ...ids.slice(20, 23).map(id =>
-          makeInadequateAnnotation(id, { missingEvidenceTypes: ['missing_tech_stack'] }),
+      const records = [
+        ...Array.from({ length: 20 }, () => makeReviewedRecord()),
+        ...Array.from({ length: 3 }, () =>
+          makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_tech_stack'] }),
         ),
-        ...ids.slice(23).map(id =>
-          makeInadequateAnnotation(id, { missingEvidenceTypes: ['missing_founder_context'] }),
+        ...Array.from({ length: 2 }, () =>
+          makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_founder_context'] }),
         ),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.isVolumeThresholdMet).toBe(true);
       expect(metrics.isAdequacyThresholdMet).toBe(true);
       expect(metrics.dominantFailureModeExceeds40Pct).toBe(true);
@@ -455,37 +482,35 @@ describe('calculateDoDMetrics()', () => {
     });
 
     it('is true when all three conditions are simultaneously met', () => {
-      // 25 reviewed, 22 adequate (88%), 3 inadequate spread evenly
-      const ids = Array.from({ length: 25 }, () => uuidv4());
-      const annotations = [
-        ...ids.slice(0, 22).map(id => makeAnnotation(id)),
-        makeInadequateAnnotation(ids[22], { missingEvidenceTypes: ['missing_tech_stack'] }),
-        makeInadequateAnnotation(ids[23], { missingEvidenceTypes: ['missing_founder_context'] }),
-        makeInadequateAnnotation(ids[24], { missingEvidenceTypes: ['missing_architecture_signal'] }),
+      // 25 reviewed, 22 adequate (88%), 3 inadequate spread evenly across different types
+      const records = [
+        ...Array.from({ length: 22 }, () => makeReviewedRecord()),
+        makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_tech_stack'] }),
+        makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_founder_context'] }),
+        makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_architecture_signal'] }),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.isDoDMet).toBe(true);
     });
   });
 
   describe('AC-016: missingEvidenceDistribution', () => {
-    it('counts each type across inadequate profiles only', () => {
-      const ids = [uuidv4(), uuidv4(), uuidv4()];
-      const annotations = [
-        makeAnnotation(ids[0]), // adequate — excluded from distribution
-        makeInadequateAnnotation(ids[1], { missingEvidenceTypes: ['missing_tech_stack'] }),
-        makeInadequateAnnotation(ids[2], {
+    it('counts each type across inadequate records only', () => {
+      const records = [
+        makeReviewedRecord(), // adequate — excluded from distribution
+        makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_tech_stack'] }),
+        makeInadequateReviewedRecord(undefined, {
           missingEvidenceTypes: ['missing_tech_stack', 'missing_founder_context'],
         }),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.missingEvidenceDistribution.missing_tech_stack).toBe(2);
       expect(metrics.missingEvidenceDistribution.missing_founder_context).toBe(1);
       expect(metrics.missingEvidenceDistribution.missing_architecture_signal).toBe(0);
     });
 
     it('always includes all five enum keys', () => {
-      const metrics = calculateDoDMetrics([makeAnnotation(uuidv4())]);
+      const metrics = calculateDoDMetrics([makeReviewedRecord()]);
       const keys = Object.keys(metrics.missingEvidenceDistribution);
       expect(keys).toContain('missing_tech_stack');
       expect(keys).toContain('missing_traction_signal');
@@ -496,57 +521,54 @@ describe('calculateDoDMetrics()', () => {
   });
 
   describe('AC-017: dominantFailureModeExceeds40Pct', () => {
-    it('is false when there are zero inadequate profiles', () => {
-      const ids = [uuidv4(), uuidv4()];
-      const metrics = calculateDoDMetrics(ids.map(id => makeAnnotation(id)));
+    it('is false when there are zero inadequate records', () => {
+      const records = [makeReviewedRecord(), makeReviewedRecord()];
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.dominantFailureModeExceeds40Pct).toBe(false);
     });
 
     it('is false when no single type exceeds 40% of inadequate count', () => {
       // 3 inadequate: each with a different type → 1/3 = 33% each
-      const ids = [uuidv4(), uuidv4(), uuidv4()];
-      const annotations = [
-        makeInadequateAnnotation(ids[0], { missingEvidenceTypes: ['missing_tech_stack'] }),
-        makeInadequateAnnotation(ids[1], { missingEvidenceTypes: ['missing_founder_context'] }),
-        makeInadequateAnnotation(ids[2], { missingEvidenceTypes: ['missing_architecture_signal'] }),
+      const records = [
+        makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_tech_stack'] }),
+        makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_founder_context'] }),
+        makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_architecture_signal'] }),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.dominantFailureModeExceeds40Pct).toBe(false);
     });
 
-    it('is true when one type appears in more than 40% of inadequate profiles', () => {
+    it('is true when one type appears in more than 40% of inadequate records', () => {
       // 5 inadequate: 3 with missing_tech_stack → 3/5 = 60% > 40%
-      const ids = Array.from({ length: 5 }, () => uuidv4());
-      const annotations = [
-        ...ids.slice(0, 3).map(id =>
-          makeInadequateAnnotation(id, { missingEvidenceTypes: ['missing_tech_stack'] }),
+      const records = [
+        ...Array.from({ length: 3 }, () =>
+          makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['missing_tech_stack'] }),
         ),
-        ...ids.slice(3).map(id =>
-          makeInadequateAnnotation(id, { missingEvidenceTypes: ['noise_false_positive'] }),
+        ...Array.from({ length: 2 }, () =>
+          makeInadequateReviewedRecord(undefined, { missingEvidenceTypes: ['noise_false_positive'] }),
         ),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.dominantFailureModeExceeds40Pct).toBe(true);
     });
   });
 
   describe('AC-018: tierDistribution', () => {
-    it('counts A/B/C tiers across all reviewed annotations', () => {
-      const ids = [uuidv4(), uuidv4(), uuidv4(), uuidv4()];
-      const annotations = [
-        makeAnnotation(ids[0], { tier: 'A' }),
-        makeAnnotation(ids[1], { tier: 'A' }),
-        makeAnnotation(ids[2], { tier: 'B' }),
-        makeAnnotation(ids[3], { tier: 'C' }),
+    it('counts A/B/C tiers across all reviewed records', () => {
+      const records = [
+        makeReviewedRecord(undefined, { tier: 'A' }),
+        makeReviewedRecord(undefined, { tier: 'A' }),
+        makeReviewedRecord(undefined, { tier: 'B' }),
+        makeReviewedRecord(undefined, { tier: 'C' }),
       ];
-      const metrics = calculateDoDMetrics(annotations);
+      const metrics = calculateDoDMetrics(records);
       expect(metrics.tierDistribution.A).toBe(2);
       expect(metrics.tierDistribution.B).toBe(1);
       expect(metrics.tierDistribution.C).toBe(1);
     });
 
     it('all three tier keys always present', () => {
-      const metrics = calculateDoDMetrics([makeAnnotation(uuidv4(), { tier: 'A' })]);
+      const metrics = calculateDoDMetrics([makeReviewedRecord(undefined, { tier: 'A' })]);
       expect(metrics.tierDistribution).toHaveProperty('A');
       expect(metrics.tierDistribution).toHaveProperty('B');
       expect(metrics.tierDistribution).toHaveProperty('C');

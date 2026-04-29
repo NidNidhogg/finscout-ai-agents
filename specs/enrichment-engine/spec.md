@@ -119,7 +119,7 @@ export interface WebsiteEnrichmentData {
   websiteMarkdown: Record<string, string>;  // url → markdown
   extractedProduct: ExtractedProductData;
   extractedTeam: ExtractedTeamData;
-  extractedFunding: ExtractedFundingData;
+  extractedFunding?: ExtractedFundingData;   // optional — not consumed by ProfileComposer in Phase 1
 }
 
 export interface WebsiteEnricherDeps {
@@ -242,7 +242,7 @@ export class ProfileComposerError extends EnrichmentError {
 - Throws `PageFetchTimeoutError` when `PageFetcher.crawl()` throws a timeout error.
 - Throws `PageFetchNetworkError` for all other `PageFetcher.crawl()` errors.
 - Does NOT validate its return value against any Zod schema.
-- `extractedFunding` supplements the tweet-derived funding data; `ProfileComposer` merges both sources.
+- Does NOT populate `extractedFunding`; the field is optional and its value is not consumed by `ProfileComposer` in Phase 1. Full website-based funding extraction is deferred to Phase 2.
 
 ### 4.3 ProfileComposer
 
@@ -252,7 +252,7 @@ export class ProfileComposerError extends EnrichmentError {
 - Sets `schemaVersion: "1.0.0"` unconditionally.
 - Sets `enrichedAt` to `new Date().toISOString()` at composition time.
 - Sets `id` to a freshly generated UUID (v4) at composition time.
-- Sets `company.name` to `resolvedCompany.name` when present; falls back to the `authorHandle` with the leading `@` stripped and first letter uppercased.
+- Sets `company.name` to `resolvedCompany.name` when present; falls back to the `authorHandle` with the leading `@` stripped and first letter uppercased. If `resolvedCompany.name` is absent AND the stripped `authorHandle` is empty or blank after stripping, throws `ProfileComposerError('missing company name source')`.
 - Sets `company.normalizedName` to the lowercase, whitespace-normalized form of `company.name`.
 - Sets `sources.xApi.tweetsConsidered: 1` unconditionally (Phase 1 — one tweet per candidate).
 - Computes `matchedCoreSignals` by intersecting matched terms against the `coreSignals` array injected at construction (comparison by `term` string, case-insensitive).
@@ -299,7 +299,7 @@ export class ProfileComposerError extends EnrichmentError {
 
 ### Group C: Profile Composer
 
-- AC-017: `compose()` sets `EnrichedProfile.company.name` to `resolvedCompany.name` when present; when `resolvedCompany.name` is absent, falls back to the `authorHandle` with the leading `@` stripped and the first character uppercased.
+- AC-017: `compose()` sets `EnrichedProfile.company.name` to `resolvedCompany.name` when present; when `resolvedCompany.name` is absent, falls back to the `authorHandle` with the leading `@` stripped and the first character uppercased; throws `ProfileComposerError('missing company name source')` when `resolvedCompany.name` is absent AND the stripped `authorHandle` is empty or blank.
 - AC-018: `compose()` sets `company.normalizedName` to the lowercase, whitespace-normalized form of `company.name`.
 - AC-019: `compose()` sets `company.websiteUrl` from `resolvedCompany.websiteUrl` and `company.xHandle` from `candidate.authorHandle`.
 - AC-020: `compose()` sets `sources.xApi.lastFetched` to `candidate.discoveredAt`, `sources.xApi.tweetsConsidered` to `1`, and `sources.xApi.founderHandle` to `candidate.authorHandle`.
@@ -369,7 +369,7 @@ export class ProfileComposerError extends EnrichmentError {
 - **Cross-poll deduplication** — `run()` deduplicates within a single poll. Same company across two separate invocations is the persistence layer's responsibility.
 - **`XApiClient` and `CompanyResolver` concrete implementations** — the HTTP clients for X API Basic tier and company URL resolution are implementation details specified in the implementation phase, not here.
 - **Per-page timeout fallback** — when `crawl()` times out, Phase 1 does not attempt per-page `fetch()` retries. Multi-source and fallback-chain fetchers are deferred.
-- **Full website-funding extraction** — `ExtractedFundingData` is returned but the primary funding source in Phase 1 is the X tweet. Richer website-based funding signal extraction is a Phase 2 improvement.
+- **Full website-funding extraction** — `ExtractedFundingData` is defined but `extractedFunding` is optional and `ProfileComposer` does NOT consume it in Phase 1. The primary funding source is the X tweet (`candidate.tweetText` / `candidate.matchedTemplates`). Richer website-based funding extraction is a Phase 2 improvement.
 
 ---
 
