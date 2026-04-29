@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import Database from 'better-sqlite3';
 import type { EnrichedProfile, ReviewAnnotation } from '../../schema/enrichedProfile';
 import type { ReviewedRecord } from '../types';
 
@@ -92,4 +93,8 @@ export function makeInadequateReviewedRecord(
     tierReason: 'Insufficient product signals.',
     ...annotationOverrides,
   });
+}
+
+export function makeInMemoryDb(): Database.Database {
+  return new Database(':memory:');
 }
