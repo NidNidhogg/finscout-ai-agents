@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "lastCurated": "2026-04-01",
+  "curator": "finscout",
+  "cell": "Infrastructure",
+  "extends": ["core-web3-signals", "core-web3-anti-signals"],
+  "primarySignals": [
+    { "term": "layer 2", "weight": 2.0 },
+    { "term": "l2", "weight": 2.0 },
+    { "term": "rollup", "weight": 2.0 },
+    { "term": "sequencer", "weight": 2.0 },
+    { "term": "bridge", "weight": 1.5 },
+    { "term": "cross-chain", "weight": 2.0 },
+    { "term": "validator", "weight": 1.5 },
+    { "term": "oracle", "weight": 1.5 }
+  ],
+  "antiSignals": []
+}

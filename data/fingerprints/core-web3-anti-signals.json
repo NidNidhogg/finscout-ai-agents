@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "lastCurated": "2026-04-01",
+  "curator": "finscout",
+  "primarySignals": [],
+  "antiSignals": [
+    { "term": "outsourcing", "weight": 1.0 },
+    { "term": "cheap dev", "weight": 2.0 },
+    { "term": "outstaffing", "weight": 2.0 },
+    { "term": "body shop", "weight": 2.0 }
+  ]
+}

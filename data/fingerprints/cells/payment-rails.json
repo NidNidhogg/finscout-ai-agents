@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "lastCurated": "2026-04-01",
+  "curator": "finscout",
+  "cell": "Payment Rails",
+  "extends": ["core-web3-signals", "core-web3-anti-signals"],
+  "primarySignals": [
+    { "term": "payment rail", "weight": 2.0 },
+    { "term": "remittance", "weight": 2.0 },
+    { "term": "on-ramp", "weight": 2.0 },
+    { "term": "off-ramp", "weight": 2.0 },
+    { "term": "fiat", "weight": 1.5 },
+    { "term": "cbdc", "weight": 2.0 },
+    { "term": "vesting", "weight": 1.5 },
+    { "term": "merkle", "weight": 1.5 }
+  ],
+  "antiSignals": []
+}

@@ -1,0 +1,20 @@
+{
+  "version": "1.0",
+  "lastCurated": "2026-04-01",
+  "curator": "finscout",
+  "cell": "DeFi & Yield",
+  "extends": ["core-web3-signals", "core-web3-anti-signals"],
+  "primarySignals": [
+    { "term": "yield", "weight": 2.0 },
+    { "term": "liquidity", "weight": 1.5 },
+    { "term": "amm", "weight": 2.0 },
+    { "term": "dex", "weight": 2.0 },
+    { "term": "tvl", "weight": 2.0 },
+    { "term": "flash loan", "weight": 2.0 },
+    { "term": "vault", "weight": 1.5 },
+    { "term": "restaking", "weight": 2.0 }
+  ],
+  "antiSignals": [
+    { "term": "cex", "weight": 1.5 }
+  ]
+}

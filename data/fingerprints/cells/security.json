@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "lastCurated": "2026-04-01",
+  "curator": "finscout",
+  "cell": "Security",
+  "extends": ["core-web3-signals", "core-web3-anti-signals"],
+  "primarySignals": [
+    { "term": "hsm", "weight": 3.0 },
+    { "term": "key management", "weight": 2.0 },
+    { "term": "threshold signature", "weight": 3.0 },
+    { "term": "zero knowledge", "weight": 2.0 },
+    { "term": "zk-proof", "weight": 2.0 },
+    { "term": "zkp", "weight": 2.0 },
+    { "term": "account abstraction", "weight": 2.0 },
+    { "term": "erc-4337", "weight": 2.0 }
+  ],
+  "antiSignals": []
+}

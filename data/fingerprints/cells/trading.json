@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "lastCurated": "2026-04-01",
+  "curator": "finscout",
+  "cell": "Trading",
+  "extends": ["core-web3-signals", "core-web3-anti-signals"],
+  "primarySignals": [
+    { "term": "order book", "weight": 2.0 },
+    { "term": "market maker", "weight": 2.0 },
+    { "term": "mev", "weight": 2.0 },
+    { "term": "intent", "weight": 1.5 },
+    { "term": "settlement", "weight": 2.0 }
+  ],
+  "antiSignals": []
+}

@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "lastCurated": "2026-04-01",
+  "curator": "finscout",
+  "primarySignals": [
+    { "term": "defi", "weight": 1.5 },
+    { "term": "web3", "weight": 1.0 },
+    { "term": "blockchain", "weight": 1.0 },
+    { "term": "crypto", "weight": 1.0 },
+    { "term": "token", "weight": 1.0 },
+    { "term": "smart contract", "weight": 1.5 },
+    { "term": "multisig", "weight": 2.0 },
+    { "term": "custody", "weight": 2.0 },
+    { "term": "wallet", "weight": 1.5 },
+    { "term": "stablecoin", "weight": 1.5 },
+    { "term": "seed round", "weight": 1.0 },
+    { "term": "raised", "weight": 1.0 }
+  ],
+  "antiSignals": [
+    { "term": "nft marketplace", "weight": 1.0 },
+    { "term": "play-to-earn", "weight": 1.5 },
+    { "term": "metaverse", "weight": 1.0 }
+  ]
+}
