@@ -69,7 +69,7 @@ export interface PageFetcher {
 
 **Concrete Phase 1 implementations:**
 
-- `FirecrawlFetcher` — production path; wraps the Firecrawl Node SDK; maps SDK responses to `FetchedPage`.
+- `FirecrawlFetcher` — production path; calls the Firecrawl REST API directly (`POST /v1/scrape`) using the Node 20 global `fetch`; no SDK dependency. Maps the `{ success, data: { markdown, metadata } }` response shape to `FetchedPage`. Timeout detection via `err.name === 'AbortError'`; non-2xx responses throw `PageFetchNetworkError`.
 - `FixturePageFetcher` — test path; loads `FetchedPage` JSON fixtures from `data/fixtures/pages/<hostname>/<path>.json`. `crawl()` returns all fixture files found under `<hostname>/`; absent fixtures return an empty array. See §4.4 for path conventions.
 
 ### 3.2 WebsiteEnricher
@@ -367,7 +367,7 @@ export class ProfileComposerError extends EnrichmentError {
 - **LLM extraction** — Phase 1 uses deterministic pattern matching only. LLM-based content extraction is explicitly deferred.
 - **Retry and backoff** — no retry logic in this module. Scheduling belongs in the calling layer (cron runner, queue worker).
 - **Cross-poll deduplication** — `run()` deduplicates within a single poll. Same company across two separate invocations is the persistence layer's responsibility.
-- **`XApiClient` and `CompanyResolver` concrete implementations** — the HTTP clients for X API Basic tier and company URL resolution are implementation details specified in the implementation phase, not here.
+- **`XApiClient` and `CompanyResolver` concrete implementations** — delivered in Wave 5 as `ConcreteXApiClient` and `ConcreteCompanyResolver` in `src/enrichment/x-signal/`. Both use Node 20 global `fetch` with no additional HTTP client dependency.
 - **Per-page timeout fallback** — when `crawl()` times out, Phase 1 does not attempt per-page `fetch()` retries. Multi-source and fallback-chain fetchers are deferred.
 - **Full website-funding extraction** — `ExtractedFundingData` is defined but `extractedFunding` is optional and `ProfileComposer` does NOT consume it in Phase 1. The primary funding source is the X tweet (`candidate.tweetText` / `candidate.matchedTemplates`). Richer website-based funding extraction is a Phase 2 improvement.
 

@@ -33,7 +33,7 @@
 
 ```typescript
 import type { CompetencyCell } from '../schema/enrichedProfile';
-import type { ResolvedFingerprint, Signal } from '../fingerprint/fingerprint';
+import type { ResolvedFingerprint, Signal } from '../fingerprint/schemas';  // actual module path
 
 export interface Tweet {
   id: string;
@@ -324,8 +324,8 @@ All four subclasses are propagated from `pollOnce()` without retry, wrapping, or
 ### 6.6 Phase 2 Deferrals
 
 - **Template configurability** — funding-announcement templates are hardcoded constants in Phase 1, matching the pattern in `src/discovery/XDiscoverySource.ts`'s `FUNDING_SIGNAL_PHRASES`. Making templates runtime-configurable (e.g., loaded from `XSignalSourceConfig` or a JSON file) is explicitly deferred.
-- **XApiClient implementation** — the concrete HTTP client that calls the X API Basic tier endpoint is deferred to the `enrichment-engine` spec.
-- **CompanyResolver implementation** — the concrete resolver (URL extraction from tweet text, handle lookup) is deferred to the `enrichment-engine` spec.
+- **XApiClient implementation** — delivered in Wave 5 as `ConcreteXApiClient` (`src/enrichment/x-signal/ConcreteXApiClient.ts`). Uses Node 20 global `fetch` against `GET /2/tweets/search/recent` with `tweet.fields`, `expansions=author_id`, and `user.fields`. Maps 429+`Retry-After` → `XRateLimitError`, 401/403 → `XAuthError`, network throws → `XNetworkError`, other non-2xx → `XResponseError`.
+- **CompanyResolver implementation** — delivered in Wave 5 as `ConcreteCompanyResolver` (`src/enrichment/x-signal/ConcreteCompanyResolver.ts`). Extracts the first non-`t.co`/`twitter.com`/`x.com` URL from tweet text via regex; derives company name from hostname (strips `www.`, capitalises); sets `xHandle` from `authorHandle`; returns `null` when no valid URL is found.
 - **Retry and backoff orchestration** — all retry, backoff, and scheduling logic belongs in the EnrichmentEngine orchestrator, not in this module.
 - **Cross-poll company deduplication** — same company surfaced across multiple `pollOnce()` calls is the orchestrator's responsibility.
 - **`Tweet` interface boundary note** — The `Tweet` interface is module-local to `src/enrichment/x-signal/`. The legacy `TweetPayload` in `src/discovery/XDiscoverySource.ts` is a separate type for the pre-existing discovery module and is not affected by this spec.

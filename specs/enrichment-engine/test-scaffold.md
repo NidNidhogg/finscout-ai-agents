@@ -10,7 +10,7 @@ All test files live under `src/enrichment/`. Each test group maps to a single te
 ### Stub and fixture factories
 
 ```typescript
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';  // Node 20 built-in; no uuid package required
 import type {
   CompanyCandidate,
   ResolvedCompany,
@@ -23,7 +23,7 @@ import type {
   ProfileComposer,
   EnrichmentEngineDeps,
 } from './EnrichmentEngine';
-import type { ResolvedFingerprint, Signal } from '../fingerprint/fingerprint';
+import type { ResolvedFingerprint, Signal } from '../fingerprint/schemas';  // actual path
 import { EnrichedProfileSchema } from '../../schema/enrichedProfile';
 import {
   XRateLimitError,
@@ -123,7 +123,7 @@ function makeStubProfileComposer(profile?: import('../../schema/enrichedProfile'
 // --- Minimal valid EnrichedProfile ---
 function buildMinimalProfile() {
   return EnrichedProfileSchema.parse({
-    id: uuidv4(),
+    id: randomUUID(),
     enrichedAt: new Date().toISOString(),
     schemaVersion: '1.0.0',
     sources: {},
@@ -424,10 +424,13 @@ describe('WebsiteEnricher — Firecrawl Boundary', () => {
   });
 
   describe('AC-015: FixturePageFetcher returns fixture pages or empty array', () => {
+    // Note: use a static top-level import (not dynamic await import) due to
+    // NodeNext moduleResolution requiring .js extensions in dynamic imports.
+    // import { FixturePageFetcher } from './sources/FixturePageFetcher';
+
     it('returns deserialized FetchedPage[] when fixtures exist', async () => {
       // Arrange: place a fixture at data/fixtures/pages/example.com/index.json
       // (fixture file is committed under data/fixtures/pages/example.com/)
-      const { FixturePageFetcher } = await import('./sources/FixturePageFetcher');
       const fetcher = new FixturePageFetcher();
 
       const pages = await fetcher.crawl('https://example.com');
@@ -437,7 +440,6 @@ describe('WebsiteEnricher — Firecrawl Boundary', () => {
     });
 
     it('returns empty array for a hostname with no fixtures', async () => {
-      const { FixturePageFetcher } = await import('./sources/FixturePageFetcher');
       const fetcher = new FixturePageFetcher();
 
       const pages = await fetcher.crawl('https://this-hostname-has-no-fixtures.example.com');
