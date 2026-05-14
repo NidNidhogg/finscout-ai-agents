@@ -1,12 +1,19 @@
 {
   "version": "1.0",
-  "lastCurated": "2026-04-01",
+  "lastCurated": "2026-05-14",
   "curator": "finscout",
   "primarySignals": [],
   "antiSignals": [
     { "term": "outsourcing", "weight": 1.0 },
     { "term": "cheap dev", "weight": 2.0 },
     { "term": "outstaffing", "weight": 2.0 },
-    { "term": "body shop", "weight": 2.0 }
+    { "term": "body shop", "weight": 2.0 },
+    { "term": "breaking", "weight": 2.0 },
+    { "term": "analytics firm", "weight": 2.0 },
+    { "term": "crypto news", "weight": 2.0 },
+    { "term": "web3 news", "weight": 2.0 },
+    { "term": "defi news", "weight": 2.0 },
+    { "term": "blockchain news", "weight": 2.0 },
+    { "term": "news roundup", "weight": 2.0 }
   ]
 }

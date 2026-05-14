@@ -19,6 +19,19 @@ function makeXApiResponse(overrides: Record<string, unknown> = {}) {
           id: '987654321',
           username: 'acmedefi',
           description: 'Building DeFi infrastructure | founder @acmedefi',
+          entities: {
+            url: {
+              urls: [
+                {
+                  url: 'https://t.co/abc123',
+                  expanded_url: 'https://acmedefi.io',
+                  display_url: 'acmedefi.io',
+                  start: 0,
+                  end: 23,
+                },
+              ],
+            },
+          },
         },
       ],
     },
@@ -225,6 +238,52 @@ describe('ConcreteXApiClient', () => {
       await expect(
         client.searchRecentTweets({ query: 'test' }),
       ).rejects.toBeInstanceOf(XResponseError);
+    });
+  });
+
+  // ── AC-X9: extracts authorProfileUrl from user entities ──────────────────
+
+  describe('AC-X9: searchRecentTweets() extracts authorProfileUrl from user entities', () => {
+    it('populates authorProfileUrl from user.entities.url.urls[0].expanded_url', async () => {
+      mockFetchOk(makeXApiResponse());
+
+      const tweets = await client.searchRecentTweets({ query: 'seed round' });
+
+      expect(tweets[0].authorProfileUrl).toBe('https://acmedefi.io');
+    });
+
+    it('authorProfileUrl is undefined when user has no entities', async () => {
+      mockFetchOk({
+        data: [{ id: '1', text: 'seed round defi', author_id: '999', created_at: '2026-01-01T00:00:00.000Z' }],
+        includes: { users: [{ id: '999', username: 'nourl', description: 'no url here' }] },
+      });
+
+      const tweets = await client.searchRecentTweets({ query: 'seed round' });
+
+      expect(tweets[0].authorProfileUrl).toBeUndefined();
+    });
+
+    it('authorProfileUrl is undefined when entities.url has no urls array', async () => {
+      mockFetchOk({
+        data: [{ id: '1', text: 'seed round defi', author_id: '999', created_at: '2026-01-01T00:00:00.000Z' }],
+        includes: { users: [{ id: '999', username: 'nourl', entities: { url: { urls: [] } } }] },
+      });
+
+      const tweets = await client.searchRecentTweets({ query: 'seed round' });
+
+      expect(tweets[0].authorProfileUrl).toBeUndefined();
+    });
+
+    it('user.fields request param includes url, entities, and public_metrics', async () => {
+      const spy = mockFetchOk(makeXApiResponse());
+
+      await client.searchRecentTweets({ query: 'seed round' });
+
+      const [rawUrl] = spy.mock.calls[0] as [string, RequestInit];
+      const url = decodeURIComponent(rawUrl);
+      expect(url).toContain('url');
+      expect(url).toContain('entities');
+      expect(url).toContain('public_metrics');
     });
   });
 });

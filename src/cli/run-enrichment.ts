@@ -115,7 +115,9 @@ async function main(): Promise<void> {
   await runEnrichment({
     bearerToken,
     firecrawlApiKey,
-    searchQuery: process.env['X_SEARCH_QUERY'] ?? 'seed round defi web3 crypto',
+    searchQuery:
+      process.env['X_SEARCH_QUERY'] ??
+      '(raised OR "seed round" OR "pre-seed" OR "series a" OR "in funding" OR "funding round") (web3 OR defi OR crypto OR blockchain) -is:retweet lang:en',
     dbPath: process.env['REVIEW_DB_PATH'] ?? 'data/review-queue.db',
   });
 }

@@ -105,4 +105,56 @@ describe('ConcreteCompanyResolver', () => {
       expect(result?.websiteUrl).toBe('https://acmedefi.io');
     });
   });
+
+  // ── AC-R6: profileUrl fallback when tweet text has no URL ────────────────
+
+  describe('AC-R6: resolve() uses profileUrl as fallback when tweet text has no usable URL', () => {
+    it('returns company with websiteUrl from profileUrl when tweet has no URL', async () => {
+      const result = await resolver.resolve('@pinai_io', 'we just raised seed round!', 'https://pinai.io');
+
+      expect(result).not.toBeNull();
+      expect(result?.websiteUrl).toBe('https://pinai.io');
+      expect(result?.xHandle).toBe('@pinai_io');
+    });
+
+    it('derives company name from profileUrl hostname', async () => {
+      const result = await resolver.resolve('@pinai_io', 'seed round for defi protocol', 'https://pinai.io');
+
+      expect(result?.name).toBe('Pinai');
+    });
+
+    it('tweet text URL takes priority over profileUrl', async () => {
+      const result = await resolver.resolve(
+        '@founder',
+        'we raised seed round, visit https://company.io',
+        'https://profilepage.com',
+      );
+
+      expect(result?.websiteUrl).toBe('https://company.io');
+    });
+
+    it('profileUrl from t.co is ignored — returns null', async () => {
+      const result = await resolver.resolve('@founder', 'seed round announcement!', 'https://t.co/abc123');
+
+      expect(result).toBeNull();
+    });
+
+    it('profileUrl from x.com is ignored — returns null', async () => {
+      const result = await resolver.resolve('@founder', 'seed round!', 'https://x.com/acmecorp');
+
+      expect(result).toBeNull();
+    });
+
+    it('invalid profileUrl is silently ignored — returns null', async () => {
+      const result = await resolver.resolve('@founder', 'seed round!', 'not-a-url');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when both tweet text and profileUrl are absent', async () => {
+      const result = await resolver.resolve('@founder', 'seed round!');
+
+      expect(result).toBeNull();
+    });
+  });
 });

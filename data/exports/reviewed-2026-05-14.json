@@ -1,0 +1,33 @@
+[
+  {
+    "id": "92a3a392-62b1-471a-a047-70c525cdcce1",
+    "enqueuedAt": "2026-05-14T11:25:50.381Z",
+    "reviewedAt": "2026-05-14T11:25:50.382Z",
+    "company": "Konnex",
+    "tier": "A",
+    "profileAdequate": true,
+    "missingEvidenceTypes": [],
+    "tierReason": "DeFi Payments, robotic AI smart contracts. Target for smart contract audit and MVA."
+  },
+  {
+    "id": "a812c43c-a80b-46f1-a8ee-343d62852d65",
+    "enqueuedAt": "2026-05-14T11:25:50.382Z",
+    "reviewedAt": "2026-05-14T11:25:50.382Z",
+    "company": "Americanfort",
+    "tier": "A",
+    "profileAdequate": true,
+    "missingEvidenceTypes": [],
+    "tierReason": "Web3 Infrastructure, secure transaction layer. Target for Zero-Trust architecture consulting."
+  },
+  {
+    "id": "70aa4b07-5fb3-424c-be48-4c96a63fa5b5",
+    "enqueuedAt": "2026-05-14T11:25:50.383Z",
+    "reviewedAt": "2026-05-14T11:25:50.383Z",
+    "company": "PIN AI",
+    "websiteUrl": "https://pinai.io",
+    "tier": "A",
+    "profileAdequate": true,
+    "missingEvidenceTypes": [],
+    "tierReason": "Personal AI Network, backed by a16z. High priority."
+  }
+]

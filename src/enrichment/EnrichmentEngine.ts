@@ -321,7 +321,9 @@ export function createProfileComposer(coreSignals: Signal[]): ProfileComposer {
         company: {
           name: companyName,
           normalizedName,
-          websiteUrl: candidate.resolvedCompany.websiteUrl,
+          ...(candidate.resolvedCompany.websiteUrl !== null && {
+            websiteUrl: candidate.resolvedCompany.websiteUrl,
+          }),
           xHandle: candidate.authorHandle,
         },
         funding: {
@@ -376,14 +378,12 @@ export function createEnrichmentEngine(deps: EnrichmentEngineDeps): EnrichmentEn
 
   const engine: EnrichmentEngine = {
     async enrich(candidate: CompanyCandidate): Promise<EnrichedProfile> {
-      let websiteData: WebsiteEnrichmentData | null;
-      try {
-        websiteData = await websiteEnricher.enrich(candidate.resolvedCompany.websiteUrl);
-      } catch (err) {
-        if (err instanceof WebsiteEnrichmentError) {
-          websiteData = null;
-        } else {
-          throw err;
+      let websiteData: WebsiteEnrichmentData | null = null;
+      if (candidate.resolvedCompany.websiteUrl !== null) {
+        try {
+          websiteData = await websiteEnricher.enrich(candidate.resolvedCompany.websiteUrl);
+        } catch (err) {
+          if (!(err instanceof WebsiteEnrichmentError)) throw err;
         }
       }
       return profileComposer.compose(candidate, websiteData, fingerprints);
@@ -405,12 +405,12 @@ export function createEnrichmentEngine(deps: EnrichmentEngineDeps): EnrichmentEn
         throw err;
       }
 
-      // Deduplicate by websiteUrl within a single poll
+      // Deduplicate URL-having candidates by websiteUrl; URL-less candidates are unique by tweetId
       const seen = new Set<string>();
       const uniqueCandidates = candidates.filter((c) => {
-        const url = c.resolvedCompany.websiteUrl;
-        if (seen.has(url)) return false;
-        seen.add(url);
+        const key = c.resolvedCompany.websiteUrl ?? `tweetId:${c.tweetId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
         return true;
       });
 

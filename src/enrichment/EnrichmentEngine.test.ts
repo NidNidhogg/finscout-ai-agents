@@ -171,4 +171,41 @@ describe('EnrichmentEngine — Orchestrator Flow', () => {
       expect(result.failedCandidates).toHaveLength(0);
     });
   });
+
+  describe('AC-009 (tiered): enrich() skips websiteEnricher when candidate has no URL', () => {
+    it('does not call websiteEnricher.enrich when resolvedCompany.websiteUrl is null', async () => {
+      const liteCandidate = makeCandidate({ resolvedCompany: { websiteUrl: null, xHandle: '@founder' } });
+      const enrichSpy = jest.fn().mockResolvedValue(makeWebsiteEnrichmentData());
+      const composer = makeStubProfileComposer();
+      const engine = createEnrichmentEngine({
+        xSignalSource: makeStubXSignalSource(),
+        websiteEnricher: { enrich: enrichSpy } as unknown as WebsiteEnricher,
+        profileComposer: composer,
+        fingerprints: makeFingerprints(),
+      });
+
+      await engine.enrich(liteCandidate);
+
+      expect(enrichSpy).not.toHaveBeenCalled();
+      expect(composer.compose).toHaveBeenCalledWith(liteCandidate, null, expect.any(Array));
+    });
+  });
+
+  describe('AC-010 (tiered): run() treats each URL-less candidate as unique (no shared-URL dedup)', () => {
+    it('preserves two URL-less candidates with different tweetIds', async () => {
+      const c1 = makeCandidate({ tweetId: 't1', resolvedCompany: { websiteUrl: null } });
+      const c2 = makeCandidate({ tweetId: 't2', resolvedCompany: { websiteUrl: null } });
+      const enrichSpy = jest.fn().mockResolvedValue(makeWebsiteEnrichmentData());
+      const engine = createEnrichmentEngine({
+        xSignalSource: makeStubXSignalSource([c1, c2]),
+        websiteEnricher: { enrich: enrichSpy } as unknown as WebsiteEnricher,
+        profileComposer: makeStubProfileComposer(),
+        fingerprints: makeFingerprints(),
+      });
+
+      const result = await engine.run();
+
+      expect(result.profilesEnriched).toHaveLength(2);
+    });
+  });
 });

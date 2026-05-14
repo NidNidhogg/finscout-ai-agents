@@ -37,7 +37,7 @@ export const EnrichedProfileSchema = z.object({
   company: z.object({
     name: z.string().min(1),
     normalizedName: z.string().min(1),
-    websiteUrl: z.string().url(),
+    websiteUrl: z.string().url().optional(),
     xHandle: z.string().optional(),
     linkedinUrl: z.string().url().optional(),
     country: z.string().optional(),

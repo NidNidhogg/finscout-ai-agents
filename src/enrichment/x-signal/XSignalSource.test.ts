@@ -127,11 +127,25 @@ describe('AC-003: insufficient density rejects tweet; resolver never called', ()
 
 // ── AC-004 ────────────────────────────────────────────────────────────────────
 
-describe('AC-004: resolver returning null excludes tweet without throwing', () => {
-  it('returns [] when resolver returns null; pollOnce does not throw', async () => {
+describe('AC-004: resolver returning null produces a lite candidate (no URL) instead of discarding', () => {
+  it('returns 1 candidate with websiteUrl: null when resolver returns null', async () => {
     const resolver = makeResolver(null);
     const result = await makeSource({ resolver }).pollOnce();
-    expect(result).toHaveLength(0);
+    expect(result).toHaveLength(1);
+    expect(result[0].resolvedCompany.websiteUrl).toBeNull();
+  });
+
+  it('lite candidate name is undefined (derived from authorHandle by composer)', async () => {
+    const resolver = makeResolver(null);
+    const result = await makeSource({ resolver }).pollOnce();
+    expect(result[0].resolvedCompany.name).toBeUndefined();
+  });
+
+  it('lite candidate xHandle matches tweet authorHandle', async () => {
+    const xClient = makeXApiClient([makeTweet({ authorHandle: '@founderx' })]);
+    const resolver = makeResolver(null);
+    const result = await makeSource({ xClient, resolver }).pollOnce();
+    expect(result[0].resolvedCompany.xHandle).toBe('@founderx');
   });
 });
 
@@ -321,10 +335,11 @@ describe('AC-016: XNetworkError propagates without retry', () => {
 
 // ── AC-017 ────────────────────────────────────────────────────────────────────
 
-describe('AC-017: resolver null drops tweet silently', () => {
-  it('resolves to [] when resolver returns null', async () => {
+describe('AC-017: resolver null no longer drops the tweet — produces lite candidate', () => {
+  it('resolves to 1 lite candidate when resolver returns null', async () => {
     const result = await makeSource({ resolver: makeResolver(null) }).pollOnce();
-    expect(result).toHaveLength(0);
+    expect(result).toHaveLength(1);
+    expect(result[0].resolvedCompany.websiteUrl).toBeNull();
   });
 });
 
@@ -498,5 +513,90 @@ describe('AC-028: pollOnce returns [] when API returns empty; resolver not calle
     const result = await makeSource({ xClient: makeXApiClient([]), resolver }).pollOnce();
     expect(result).toHaveLength(0);
     expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+});
+
+// ── AC-029: F5 funding threshold ─────────────────────────────────────────────
+
+
+describe('AC-029: f5:low_funding discards tweet with sub-$1M amount; resolver never called', () => {
+  it('$500k tweet is discarded and resolver not invoked', async () => {
+    const xClient = makeXApiClient([
+      makeTweet({ text: 'we raised $500k seed round for our defi multisig protocol' }),
+    ]);
+    const resolver = makeResolver();
+    const result = await makeSource({ xClient, resolver }).pollOnce();
+    expect(result).toHaveLength(0);
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it('$100K tweet is discarded', async () => {
+    const xClient = makeXApiClient([
+      makeTweet({ text: 'proud to announce $100K pre-seed for our defi multisig wallet' }),
+    ]);
+    const result = await makeSource({ xClient }).pollOnce();
+    expect(result).toHaveLength(0);
+  });
+
+  it('$1.5M tweet passes f5 and produces a candidate', async () => {
+    const xClient = makeXApiClient([
+      makeTweet({ text: 'we raised $1.5M seed round for our defi multisig protocol' }),
+    ]);
+    const result = await makeSource({ xClient }).pollOnce();
+    expect(result).toHaveLength(1);
+  });
+
+  it('$10M tweet passes f5', async () => {
+    const xClient = makeXApiClient([
+      makeTweet({ text: 'thrilled to announce $10M seed round for our defi multisig infrastructure' }),
+    ]);
+    const result = await makeSource({ xClient }).pollOnce();
+    expect(result).toHaveLength(1);
+  });
+
+  it('tweet with no explicit amount passes f5 (undisclosed rounds are valuable)', async () => {
+    const xClient = makeXApiClient([
+      makeTweet({ text: 'we raised seed round for our defi multisig protocol' }),
+    ]);
+    const result = await makeSource({ xClient }).pollOnce();
+    expect(result).toHaveLength(1);
+  });
+});
+
+// ── AC-030: authorProfileUrl forwarded to resolver ────────────────────────────
+
+describe('AC-030: pollOnce() passes tweet.authorProfileUrl as third arg to resolver', () => {
+  it('forwards authorProfileUrl to resolver.resolve()', async () => {
+    const tweet = makeTweet({ authorProfileUrl: 'https://pinai.io' });
+    const xClient = makeXApiClient([tweet]);
+    const resolver = makeResolver();
+
+    await makeSource({ xClient, resolver }).pollOnce();
+
+    expect(resolver.resolve).toHaveBeenCalledWith(tweet.authorHandle, tweet.text, 'https://pinai.io');
+  });
+
+  it('passes undefined when tweet has no authorProfileUrl', async () => {
+    const tweet = makeTweet();
+    const xClient = makeXApiClient([tweet]);
+    const resolver = makeResolver();
+
+    await makeSource({ xClient, resolver }).pollOnce();
+
+    expect(resolver.resolve).toHaveBeenCalledWith(tweet.authorHandle, tweet.text, undefined);
+  });
+});
+
+// ── AC-031: profile URL enables full (non-lite) candidate ─────────────────────
+
+describe('AC-031: candidate gets websiteUrl from profile URL when resolver returns it', () => {
+  it('resolvedCompany.websiteUrl is non-null when resolver resolves via profile URL', async () => {
+    const tweet = makeTweet({ authorProfileUrl: 'https://pinai.io' });
+    const xClient = makeXApiClient([tweet]);
+    const resolver = makeResolver({ websiteUrl: 'https://pinai.io', name: 'Pinai' });
+
+    const result = await makeSource({ xClient, resolver }).pollOnce();
+
+    expect(result[0].resolvedCompany.websiteUrl).toBe('https://pinai.io');
   });
 });

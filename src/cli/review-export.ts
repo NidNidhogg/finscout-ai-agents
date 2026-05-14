@@ -9,7 +9,7 @@ export interface ExportRecord {
   enqueuedAt: string;
   reviewedAt?: string;
   company: string;
-  websiteUrl: string;
+  websiteUrl?: string;
   tier: string;
   profileAdequate: boolean;
   missingEvidenceTypes: string[];

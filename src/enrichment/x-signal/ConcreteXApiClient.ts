@@ -13,10 +13,22 @@ interface XApiTweet {
   created_at: string;
 }
 
+interface XApiUrlEntity {
+  url: string;
+  expanded_url: string;
+  display_url: string;
+  start: number;
+  end: number;
+}
+
 interface XApiUser {
   id: string;
   username: string;
   description?: string;
+  entities?: {
+    url?: { urls?: XApiUrlEntity[] };
+    description?: { urls?: XApiUrlEntity[] };
+  };
 }
 
 interface XApiResponse {
@@ -41,7 +53,7 @@ export class ConcreteXApiClient implements XApiClient {
       query: params.query,
       'tweet.fields': 'created_at,author_id',
       expansions: 'author_id',
-      'user.fields': 'username,description',
+      'user.fields': 'username,description,url,entities,public_metrics',
     });
 
     if (params.maxResults !== undefined) {
@@ -82,11 +94,13 @@ export class ConcreteXApiClient implements XApiClient {
 
     return tweets.map((tweet) => {
       const user = users.find((u) => u.id === tweet.author_id);
+      const authorProfileUrl = user?.entities?.url?.urls?.[0]?.expanded_url;
       return {
         id: tweet.id,
         text: tweet.text,
         authorHandle: user ? `@${user.username}` : '@unknown',
         authorBio: user?.description,
+        authorProfileUrl: authorProfileUrl || undefined,
         postedAt: tweet.created_at,
       };
     });
