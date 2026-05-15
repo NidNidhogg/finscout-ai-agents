@@ -10,6 +10,7 @@
     "lint": "eslint src/**"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
     "@google/generative-ai": "^0.21.0",
     "axios": "^1.7.7",
     "better-sqlite3": "^12.9.0",
