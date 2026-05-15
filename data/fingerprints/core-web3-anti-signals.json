@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "lastCurated": "2026-05-14",
+  "lastCurated": "2026-05-15",
   "curator": "finscout",
   "primarySignals": [],
   "antiSignals": [
@@ -14,6 +14,17 @@
     { "term": "web3 news", "weight": 2.0 },
     { "term": "defi news", "weight": 2.0 },
     { "term": "blockchain news", "weight": 2.0 },
-    { "term": "news roundup", "weight": 2.0 }
+    { "term": "news roundup", "weight": 2.0 },
+    { "term": "airdrop", "weight": 2.0 },
+    { "term": "giveaway", "weight": 2.0 },
+    { "term": "whitelist", "weight": 1.5 },
+    { "term": "presale", "weight": 2.0 },
+    { "term": "daily news", "weight": 2.0 },
+    { "term": "aggregator", "weight": 1.5 },
+    { "term": "alpha group", "weight": 2.0 },
+    { "term": "telegram call", "weight": 2.0 },
+    { "term": "signal channel", "weight": 2.0 },
+    { "term": "100x", "weight": 2.0 },
+    { "term": "testnet", "weight": 1.0 }
   ]
 }

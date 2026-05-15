@@ -24,6 +24,9 @@
 | DoD gate | ≥ 25 reviewed, ≥ 80% adequacy rate, no dominant failure mode > 40% |
 | Idempotency | 3-layer guard: candidate dedup, in-memory URL Set, cross-run `websiteCrawl.lastFetched` check |
 | Export | `review-export.ts` → flat JSON array, input to Module C |
+| DefiLlama ingestion | `fetch-defillama.ts` — ICP-filtered TVL $10M–$100M, URL normalizer (redirect resolver + dead-URL discard), cross-run dedup by `websiteUrl`, no API key required |
+| Enrichment pass | `enrich-pending.ts` — Firecrawl deep-crawl on pending queue, stack + arch signal merge, circuit breaker (no technical signals → `discarded`), auto `ReviewAnnotation` |
+| Outreach generation | `generate-outreach.ts` — Gemini 2.0 Flash, Baron Sever persona, 4-sentence framework (Hook → Hypothesis → Value Drop → CTA), writes `data/exports/outreach-drafts-*.md`, second circuit breaker pre-LLM |
 
 ### Known Gaps (Backlog — not blocking Phase 2)
 
@@ -36,61 +39,46 @@
 
 ---
 
-## Phase 2 — Module C: Outreach Engine
+## Phase 2 — Outreach Automation & Signal Expansion
 
-**Status: NOT STARTED**
+**Status: PLANNED**
 
-### Scope
+### LinkedIn / Email Sender Integration (HITL)
 
-Module C consumes the `data/exports/reviewed-YYYY-MM-DD.json` output from Module A and automates the generation and delivery of personalised cold outreach emails.
+Integrate a mail sender adapter (SendGrid or Resend) behind a `MailSender` interface. Human-in-the-loop gate: operator reviews and approves drafts before any send action is triggered.
 
-### Design Constraints
+- `MailSender` interface: `send(draft): Promise<void>` — injected; no-op stub in current soft launch
+- `ConcreteMailSender`: SendGrid or Resend REST adapter
+- `send-outreach.ts` CLI: reads `drafted` queue items, sends via `MailSender`, transitions to `sent`
+- Rate-limited: ≤ 20 emails/day in MVP
+- Unsubscribe token embedded per email; honoured immediately on click
+- Bounce and reply tracking via provider webhook → updates queue status
 
-- **Input:** Only Tier A profiles from `review-export`. Tier B/C are not emailed in soft launch.
-- **Personalisation surface:** `product.architectureTerms`, `product.stackMentions`, `product.competencyCellMatches`, `funding.claimed.rawText`, `team.openRoles`.
-- **Signal-to-email mapping:** Each competency cell has a corresponding outreach angle. A profile with `matchedCells: [Security]` and `architectureTerms: [hsm, threshold signature]` should trigger a zero-trust / key management angle, not a generic DeFi pitch.
-- **Anthropic API:** Use Claude for email drafting. Model: `claude-opus-4-7` (highest quality) or `claude-sonnet-4-6` (cost/quality balance). No streaming required — batch generation.
+### Automated Reply Sentiment Analysis
 
-### Delivery: Soft Launch vs Hard Launch
+Parse inbound reply threads via IMAP or provider webhook. Classify each reply and update queue state.
 
-**Soft Launch (recommended first)**
+| Sentiment | Queue status transition | Action |
+|---|---|---|
+| Interested / positive | `sent → replied-positive` | Surface for founder follow-up within 24h |
+| Neutral / no-right-now | `sent → replied-neutral` | Log; no immediate action |
+| Unsubscribe | `sent → unsubscribed` | Suppression list; never contact again |
 
-Generate emails and write them to a local JSON file (`data/drafts/outreach-YYYY-MM-DD.json`). No sending. Founder reviews each draft, edits as needed, sends manually. Validates template quality before any automation touches the outbox.
+Classification model: Gemini 2.0 Flash with a short system prompt (no fine-tuning required at this volume).
 
-```
-review-export.ts  →  draft-emails.ts  →  data/drafts/  →  manual send
-```
+### Multi-Source Signals
 
-**Hard Launch**
+Extend `EnrichedProfile` with signals from two additional sources, feeding into `team.openRoles` and `product.evidence`.
 
-Integrate a mail sender (SendGrid, Resend, or SMTP) as a concrete adapter behind a `MailSender` interface. Send rate-limited (≤ 20/day in MVP). Unsubscribe token embedded in each email. Bounce/reply tracking via webhook.
+**GitHub activity (`src/enrichment/github/`)**
+- Public commit frequency and contributor count as engineering velocity proxy
+- Open issues labelled `help wanted` or `good first issue` as hiring signal
+- No GitHub token required for public repos at this volume
 
-```
-review-export.ts  →  draft-emails.ts  →  MailSender  →  SMTP/API  →  inbox
-```
-
-Hard launch is gated on Soft Launch validation: ≥ 10 manually-sent emails with acceptable reply rate before automation is switched on.
-
-### Proposed Module C Components
-
-| Component | Responsibility |
-|---|---|
-| `OutreachProfileSchema` (Zod) | Validated input contract from `review-export.ts` output |
-| `EmailDrafter` interface | `draft(profile): Promise<EmailDraft>` |
-| `ClaudeEmailDrafter` | Concrete implementation — builds structured prompt from profile signals, calls Anthropic API |
-| `CellTemplateRegistry` | Maps `CompetencyCell` → system prompt context + subject line heuristics |
-| `MailSender` interface | `send(draft): Promise<void>` — injected; stub in Soft Launch |
-| `ConcreteMailSender` | Concrete implementation (SendGrid or Resend REST adapter) — Hard Launch only |
-| `draft-emails.ts` CLI | Reads export JSON, drafts emails, writes to `data/drafts/` |
-| `send-outreach.ts` CLI | Reads drafts, sends via `MailSender`, records sent status in SQLite |
-
-### Acceptance Criteria (Soft Launch)
-
-1. `draft-emails.ts` produces one `EmailDraft` per Tier A profile with non-empty `subject` and `body`.
-2. Draft `body` references at least one signal extracted from the profile (`architectureTerms` or `stackMentions`).
-3. No email is generated for a profile that has already been drafted (idempotency by `profile.id`).
-4. Draft JSON is valid per `EmailDraftSchema` (Zod).
-5. CLI exits cleanly when the export file is empty.
+**Job board scraping (`src/enrichment/jobs/`)**
+- Greenhouse, Lever, and Ashby job pages via Firecrawl targeted crawl
+- Open engineering roles extracted into `team.openRoles[].title` and `stackHints`
+- LinkedIn headcount delta deferred (requires authenticated session or third-party API)
 
 ---
 

@@ -194,7 +194,9 @@ async function main(): Promise<void> {
   console.log(`[generate-outreach] Found ${rows.length} reviewed profile(s). Drafting…\n`);
 
   const drafts: EmailDraft[] = [];
-  const updateStmt = db.prepare<[string], void>(`UPDATE queue_items SET status = 'drafted' WHERE id = ?`);
+  const draftStmt = db.prepare<[string], void>(`UPDATE queue_items SET status = 'drafted' WHERE id = ?`);
+  const discardStmt = db.prepare<[string], void>(`UPDATE queue_items SET status = 'discarded' WHERE id = ?`);
+  let discarded = 0;
 
   for (const row of rows) {
     const profile = EnrichedProfileSchema.parse(JSON.parse(row.profile_json));
@@ -203,6 +205,19 @@ async function main(): Promise<void> {
       : {};
 
     const companyLabel = `${profile.company.name} (${profile.company.xHandle ?? row.id.slice(0, 8)})`;
+
+    // Circuit breaker: skip profiles with no actionable technical signals
+    const hasSignals =
+      profile.product.stackMentions.length > 0 ||
+      profile.product.architectureTerms.length > 0;
+
+    if (!hasSignals) {
+      console.log(`  ⚡ ${companyLabel} — no technical signals, skipping LLM call → discarded`);
+      discardStmt.run(row.id);
+      discarded++;
+      continue;
+    }
+
     process.stdout.write(`  → ${companyLabel}… `);
 
     const userPrompt = buildUserPrompt(profile, annotation);
@@ -228,7 +243,7 @@ async function main(): Promise<void> {
       body,
     });
 
-    updateStmt.run(row.id);
+    draftStmt.run(row.id);
     console.log('done');
   }
 
@@ -241,7 +256,9 @@ async function main(): Promise<void> {
   fs.writeFileSync(outPath, markdown, 'utf-8');
 
   console.log(`\n[generate-outreach] ${drafts.length} draft(s) written → ${outPath}`);
-  console.log('[generate-outreach] Status updated: reviewed → drafted for all processed records.');
+  if (discarded > 0) {
+    console.log(`[generate-outreach] ${discarded} profile(s) discarded (circuit breaker: no technical signals).`);
+  }
 }
 
 main().catch((err: unknown) => {

@@ -29,6 +29,21 @@ A profile missing all three legs is marked `profileAdequate: false` with the cor
 
 ---
 
+## 3-Stage Pipeline
+
+The pipeline is structured into three discrete stages, each backed by a dedicated CLI script. Stages are decoupled: each reads from and writes to the SQLite queue independently.
+
+| Stage | CLI | Input source | Queue transition |
+|---|---|---|---|
+| **1 — Ingestion** | `fetch-defillama.ts` | DefiLlama API (live TVL data) | insert `pending` |
+| **1 — Ingestion (alt)** | `run-enrichment.ts` | X API v2 tweet firehose | insert `pending` |
+| **2 — Enrichment** | `enrich-pending.ts` | `pending` items | `pending → reviewed` or `discarded` |
+| **3 — Generation** | `generate-outreach.ts` | `reviewed` items | `reviewed → drafted` or `discarded` |
+
+The queue item `status` column (`pending → reviewed | discarded → drafted`) is the coordination primitive. No message broker required; SQLite `INSERT OR IGNORE` and `UPDATE … WHERE id = ?` provide sufficient concurrency control for single-operator use.
+
+---
+
 ## Data Flow Pipeline
 
 ### Step 1 — X API tweet ingestion
@@ -295,6 +310,49 @@ Three layers (see Step 3 above):
 1. Candidate-level URL dedup in `run()` before any external call
 2. In-memory `crawledUrls` Set inside `createEnrichmentEngine` for within-run dedup
 3. `sources.websiteCrawl.lastFetched` pre-check in operational scripts for cross-run dedup
+
+---
+
+## Reliability Layer
+
+Three mechanisms prevent low-signal data from propagating to the outreach stage.
+
+### URL Normalizer
+
+**File:** `src/cli/fetch-defillama.ts` (`resolveCanonicalUrl`)
+
+Applied during DefiLlama ingestion. Each candidate URL is:
+
+1. Scheme-normalised (prepends `https://` if missing)
+2. Redirect-followed via `HEAD` with `redirect: 'follow'` and an 8-second `AbortSignal.timeout`
+3. Tracking-param stripped (`utm_*`, `fbclid`, `gclid`, `mc_eid`, `ref`)
+4. Validated: non-2xx responses, DNS failures, and timeouts return `null` — the protocol is logged as dead and skipped
+
+Surviving URLs are checked against `existingUrls` (all `websiteUrl` values loaded from the queue at startup) before insert. A profile is never inserted if its resolved URL already exists in any queue status.
+
+`405 Method Not Allowed` on HEAD is treated as live (server rejects HEAD but the site is reachable); the normalised input URL is used in place of the final redirect destination.
+
+### F2 Anti-Vocab Filter
+
+**File:** `src/enrichment/x-signal/filters.ts` (`detectAntiVocab`)
+
+Applied during X API ingestion, before any Firecrawl call. Scans tweet text and author bio against two disqualifier vocabularies:
+
+- **Core anti-signals** (`data/fingerprints/core-web3-anti-signals.json`): terms common to non-ICP entities — news aggregators, analytics firms, exchanges not building backend infrastructure
+- **Cell anti-signals** (per competency cell JSON): terms that conflict with specific cell membership
+
+A single match discards the candidate with label `f2:anti_vocab_match`. No Firecrawl credit is consumed for a filtered candidate.
+
+### Circuit Breaker
+
+**Files:** `src/cli/enrich-pending.ts` (`hasSubstantiveSignals`), `src/cli/generate-outreach.ts`
+
+Applied at two points downstream of ingestion. The condition is the same at both points: `profile.product.stackMentions.length === 0 && profile.product.architectureTerms.length === 0`.
+
+1. **Post-enrichment (Stage 2):** After the Firecrawl crawl completes (or fails), if no technical signals are present, the profile is set to `discarded`. No `ReviewAnnotation` is generated; no reviewed slot is consumed.
+2. **Pre-LLM (Stage 3):** Before each Gemini API call, the check runs again. `reviewed` profiles with no signals are set to `discarded` without consuming an API credit.
+
+The dual-stage circuit breaker prevents content-free prompts from reaching the LLM and ensures every Baron Sever email is grounded in verified technical signals extracted from the company's own website.
 
 ---
 
