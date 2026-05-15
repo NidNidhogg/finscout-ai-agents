@@ -15,6 +15,7 @@ export interface CrawlOpts {
   maxPages?: number;
   timeoutMs?: number;
   includePaths?: string[];
+  excludePaths?: string[];
 }
 
 export interface FetchedPage {
@@ -194,9 +195,23 @@ export function createWebsiteEnricher(deps: WebsiteEnricherDeps): WebsiteEnriche
 
   return {
     async enrich(websiteUrl: string): Promise<WebsiteEnrichmentData> {
+      const sharedOpts = {
+        maxPages: 5,
+        excludePaths: ['.pdf', 'whitepaper'],
+      };
+
       let pages: FetchedPage[];
       try {
-        pages = await pageFetcher.crawl(websiteUrl, {});
+        pages = await pageFetcher.crawl(websiteUrl, {
+          ...sharedOpts,
+          includePaths: ['doc', 'sdk', 'developer', 'api', 'wiki'],
+        });
+        // When no doc/sdk paths exist the site returns only the root URL — fall back
+        // to an unrestricted crawl so press releases, careers, and other linked pages
+        // are still reachable.
+        if (pages.length <= 1) {
+          pages = await pageFetcher.crawl(websiteUrl, sharedOpts);
+        }
       } catch (err) {
         const isTimeout =
           err instanceof Error &&
@@ -375,13 +390,16 @@ export function createProfileComposer(coreSignals: Signal[]): ProfileComposer {
 
 export function createEnrichmentEngine(deps: EnrichmentEngineDeps): EnrichmentEngine {
   const { xSignalSource, websiteEnricher, profileComposer, fingerprints } = deps;
+  const crawledUrls = new Set<string>();
 
   const engine: EnrichmentEngine = {
     async enrich(candidate: CompanyCandidate): Promise<EnrichedProfile> {
       let websiteData: WebsiteEnrichmentData | null = null;
-      if (candidate.resolvedCompany.websiteUrl !== null) {
+      const url = candidate.resolvedCompany.websiteUrl;
+      if (url !== null && !crawledUrls.has(url)) {
+        crawledUrls.add(url);
         try {
-          websiteData = await websiteEnricher.enrich(candidate.resolvedCompany.websiteUrl);
+          websiteData = await websiteEnricher.enrich(url);
         } catch (err) {
           if (!(err instanceof WebsiteEnrichmentError)) throw err;
         }

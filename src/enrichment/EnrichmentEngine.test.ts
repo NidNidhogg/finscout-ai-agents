@@ -191,6 +191,42 @@ describe('EnrichmentEngine — Orchestrator Flow', () => {
     });
   });
 
+  describe('AC-011 (idempotency): enrich() skips websiteEnricher for a URL already crawled by this engine instance', () => {
+    it('calls websiteEnricher.enrich only once when enrich() is called twice with the same URL', async () => {
+      const url = 'https://example.com';
+      const candidate = makeCandidate({ resolvedCompany: { websiteUrl: url, name: 'Example', xHandle: '@example' } });
+      const enrichSpy = jest.fn().mockResolvedValue(makeWebsiteEnrichmentData());
+      const engine = createEnrichmentEngine({
+        xSignalSource: makeStubXSignalSource(),
+        websiteEnricher: { enrich: enrichSpy } as unknown as WebsiteEnricher,
+        profileComposer: makeStubProfileComposer(),
+        fingerprints: makeFingerprints(),
+      });
+
+      await engine.enrich(candidate);
+      await engine.enrich(candidate);
+
+      expect(enrichSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('still enriches a different URL on the second call', async () => {
+      const c1 = makeCandidate({ resolvedCompany: { websiteUrl: 'https://alpha.com', name: 'Alpha' } });
+      const c2 = makeCandidate({ tweetId: 't2', resolvedCompany: { websiteUrl: 'https://beta.com', name: 'Beta' } });
+      const enrichSpy = jest.fn().mockResolvedValue(makeWebsiteEnrichmentData());
+      const engine = createEnrichmentEngine({
+        xSignalSource: makeStubXSignalSource(),
+        websiteEnricher: { enrich: enrichSpy } as unknown as WebsiteEnricher,
+        profileComposer: makeStubProfileComposer(),
+        fingerprints: makeFingerprints(),
+      });
+
+      await engine.enrich(c1);
+      await engine.enrich(c2);
+
+      expect(enrichSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('AC-010 (tiered): run() treats each URL-less candidate as unique (no shared-URL dedup)', () => {
     it('preserves two URL-less candidates with different tweetIds', async () => {
       const c1 = makeCandidate({ tweetId: 't1', resolvedCompany: { websiteUrl: null } });

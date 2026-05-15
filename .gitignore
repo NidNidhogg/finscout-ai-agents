@@ -1,9 +1,26 @@
 # iDECP Orchestrator
-.env
-.claude/heal-logs/
-.claude/heal-failures/
 
-# OS generated files
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Database state ────────────────────────────────────────────────────────────
+# SQLite runtime files — regenerated from source; never commit DB state.
+data/*.db
+data/*.sqlite
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/exports/
+
+# ── Dependencies & build artifacts ───────────────────────────────────────────
+node_modules/
+dist/
+build/
+npm-debug.log*
+
+# ── OS & IDE ──────────────────────────────────────────────────────────────────
 .DS_Store
 .DS_Store?
 ._*
@@ -11,16 +28,15 @@
 .Trashes
 ehthumbs.db
 Thumbs.db
+.vscode/
 
-# Dependencies and build output
-node_modules/
-dist/
-npm-debug.log*
+# ── Internal tooling ─────────────────────────────────────────────────────────
+.claude/heal-logs/
+.claude/heal-failures/
 
-# Discovery pipeline — large fixture corpus can be regenerated
-# Individual fixtures under 10MB total may be committed; gitignore
-# triggers when corpus grows beyond that threshold.
-# Uncomment when needed:
+# ── Discovery pipeline fixtures ───────────────────────────────────────────────
+# Large fixture corpus can be regenerated; commit .gitkeep placeholders only.
+# Uncomment to ignore when corpus grows beyond ~10 MB:
 # data/fixtures/pages/*.json
 # data/fixtures/tweets/*.json
 !data/fixtures/**/.gitkeep

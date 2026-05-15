@@ -18,6 +18,91 @@ describe('WebsiteEnricher — Firecrawl Boundary', () => {
 
       expect(crawlMock).toHaveBeenCalledWith('https://example.com', expect.anything());
     });
+
+    it('passes a maxPages limit to control crawl depth', async () => {
+      const crawlMock = jest.fn().mockResolvedValue([makeFetchedPage()]);
+      const fetcher: PageFetcher = { fetch: jest.fn(), crawl: crawlMock };
+      const enricher = createWebsiteEnricher({ pageFetcher: fetcher });
+
+      await enricher.enrich('https://example.com');
+
+      expect(crawlMock).toHaveBeenCalledWith(
+        'https://example.com',
+        expect.objectContaining({ maxPages: expect.any(Number) }),
+      );
+    });
+
+    it('passes excludePaths blocking PDFs and whitepaper paths on the first crawl', async () => {
+      const crawlMock = jest.fn().mockResolvedValue([makeFetchedPage()]);
+      const fetcher: PageFetcher = { fetch: jest.fn(), crawl: crawlMock };
+      const enricher = createWebsiteEnricher({ pageFetcher: fetcher });
+
+      await enricher.enrich('https://example.com');
+
+      expect(crawlMock).toHaveBeenCalledWith(
+        'https://example.com',
+        expect.objectContaining({
+          excludePaths: expect.arrayContaining([
+            expect.stringContaining('.pdf'),
+            expect.stringContaining('whitepaper'),
+          ]),
+        }),
+      );
+    });
+
+    it('passes includePaths prioritising doc/sdk/developer/api/wiki on the first crawl', async () => {
+      const crawlMock = jest.fn().mockResolvedValue([makeFetchedPage(), makeFetchedPage()]);
+      const fetcher: PageFetcher = { fetch: jest.fn(), crawl: crawlMock };
+      const enricher = createWebsiteEnricher({ pageFetcher: fetcher });
+
+      await enricher.enrich('https://example.com');
+
+      expect(crawlMock).toHaveBeenNthCalledWith(
+        1,
+        'https://example.com',
+        expect.objectContaining({
+          includePaths: expect.arrayContaining(['doc', 'sdk', 'developer', 'api', 'wiki']),
+        }),
+      );
+    });
+  });
+
+  describe('AC-009b: two-phase crawl — fallback when no doc paths exist', () => {
+    it('retries without includePaths when the first crawl returns only one page', async () => {
+      const rootOnly = [makeFetchedPage({ url: 'https://example.com/' })];
+      const fullPages = [
+        makeFetchedPage({ url: 'https://example.com/' }),
+        makeFetchedPage({ url: 'https://example.com/blog' }),
+        makeFetchedPage({ url: 'https://example.com/about' }),
+      ];
+      const crawlMock = jest.fn()
+        .mockResolvedValueOnce(rootOnly)
+        .mockResolvedValueOnce(fullPages);
+      const fetcher: PageFetcher = { fetch: jest.fn(), crawl: crawlMock };
+      const enricher = createWebsiteEnricher({ pageFetcher: fetcher });
+
+      const data = await enricher.enrich('https://example.com');
+
+      expect(crawlMock).toHaveBeenCalledTimes(2);
+      expect(data.pagesFetched).toHaveLength(3);
+      const [, fallbackOpts] = crawlMock.mock.calls[1] as [string, Record<string, unknown>];
+      expect(fallbackOpts).not.toHaveProperty('includePaths');
+      expect(fallbackOpts).toHaveProperty('excludePaths');
+    });
+
+    it('does not retry when the first crawl returns more than one page', async () => {
+      const multiPage = [
+        makeFetchedPage({ url: 'https://example.com/docs' }),
+        makeFetchedPage({ url: 'https://example.com/sdk' }),
+      ];
+      const crawlMock = jest.fn().mockResolvedValue(multiPage);
+      const fetcher: PageFetcher = { fetch: jest.fn(), crawl: crawlMock };
+      const enricher = createWebsiteEnricher({ pageFetcher: fetcher });
+
+      await enricher.enrich('https://example.com');
+
+      expect(crawlMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('AC-010: pagesFetched contains one entry per page returned by crawl', () => {
