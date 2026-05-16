@@ -45,6 +45,90 @@ interface EmailDraft {
   body: string;
 }
 
+// ── Source routing ────────────────────────────────────────────────────────────
+
+type LeadSource = 'cryptorank' | 'funding-radar' | 'x-radar' | 'defillama' | 'unknown';
+
+function detectSource(profile: ReturnType<typeof EnrichedProfileSchema.parse>): LeadSource {
+  const rawText = profile.funding.claimed?.rawText ?? '';
+  if (rawText.startsWith('CryptoRank:')) return 'cryptorank';
+  if (rawText.startsWith('Funding Radar:')) return 'funding-radar';
+  if (rawText.startsWith('X-Radar:')) return 'x-radar';
+  if (rawText.startsWith('DefiLlama TVL:')) return 'defillama';
+  return 'unknown';
+}
+
+const SOURCE_ANGLE: Record<LeadSource, string> = {
+  cryptorank:      'CryptoRank Funding Radar — recent raise (MVA / post-raise technical debt prevention)',
+  'funding-radar': 'DefiLlama Raises — recently funded Web3 project (MVA / post-raise technical debt prevention)',
+  'x-radar':       'X Funding Radar — announced raise detected via Twitter/X (MVA / post-raise technical debt prevention)',
+  defillama:       'DefiLlama — live on-chain protocol (Zero-Trust, HSM, high-load security)',
+  unknown:         'direct / manual injection',
+};
+
+// Steps 2–3 of the 4-sentence framework vary by source. Step 1 (Hook) and Step 4 (CTA) are invariant.
+const FRAMEWORK_BY_SOURCE: Record<LeadSource, { hypothesis: string; valueDrop: string }> = {
+  'x-radar': {
+    hypothesis:
+      '**Hypothesis** — Name a precise architectural risk *implied* by their stack and raise stage. ' +
+      'Focus on post-raise technical debt traps: premature abstractions locked in at MVP phase, ' +
+      'synchronous bottlenecks that survive into production, missing observability at persistence ' +
+      'boundaries, or auth/key management shortcuts that compound into security liabilities at scale.',
+    valueDrop:
+      '**Value Drop** — One sentence on how iDECP\'s MVA approach eliminates this. ' +
+      'Angle: a 6–12 week Minimum Viable Architecture engagement is purpose-built to avoid the ' +
+      '"quick and dirty" trap — the architectural choices made in weeks 1–4 post-raise that cause ' +
+      '70% of teams to hit a hard scaling wall at 12 months. Result: 40% less technical debt, ' +
+      'no throwaway code. "Start Fast and Simple, Build Right."',
+  },
+  'funding-radar': {
+    hypothesis:
+      '**Hypothesis** — Name a precise architectural risk *implied* by their stack and raise stage. ' +
+      'Focus on post-raise technical debt traps: premature abstractions locked in at MVP phase, ' +
+      'synchronous bottlenecks that survive into production, missing observability at persistence ' +
+      'boundaries, or auth/key management shortcuts that compound into security liabilities at scale.',
+    valueDrop:
+      '**Value Drop** — One sentence on how iDECP\'s MVA approach eliminates this. ' +
+      'Angle: a 6–12 week Minimum Viable Architecture engagement is purpose-built to avoid the ' +
+      '"quick and dirty" trap — the architectural choices made in weeks 1–4 post-raise that cause ' +
+      '70% of teams to hit a hard scaling wall at 12 months. Result: 40% less technical debt, ' +
+      'no throwaway code. "Start Fast and Simple, Build Right."',
+  },
+  cryptorank: {
+    hypothesis:
+      '**Hypothesis** — Name a precise architectural risk *implied* by their stack and raise stage. ' +
+      'Focus on post-raise technical debt traps: premature abstractions locked in at MVP phase, ' +
+      'synchronous bottlenecks that survive into production, missing observability at persistence ' +
+      'boundaries, or auth/key management shortcuts that compound into security liabilities at scale.',
+    valueDrop:
+      '**Value Drop** — One sentence on how iDECP\'s MVA approach eliminates this. ' +
+      'Angle: a 6–12 week Minimum Viable Architecture engagement is purpose-built to avoid the ' +
+      '"quick and dirty" trap — the architectural choices made in weeks 1–4 post-raise that cause ' +
+      '70% of teams to hit a hard scaling wall at 12 months. Result: 40% less technical debt, ' +
+      'no throwaway code. "Start Fast and Simple, Build Right."',
+  },
+  defillama: {
+    hypothesis:
+      '**Hypothesis** — Name a precise architectural, scaling, or security challenge *implied* by their ' +
+      'signals (e.g., multi-sig coordination under load, settlement finality risk under adversarial ' +
+      'conditions, key management at HSM tier, intent-relay latency).',
+    valueDrop:
+      '**Value Drop** — One sentence on how iDECP addresses this. ' +
+      'Choose the angle that fits: Zero-Trust backends, MVA for high-load async systems, ' +
+      'cross-chain security primitives, or HSM-grade key management.',
+  },
+  unknown: {
+    hypothesis:
+      '**Hypothesis** — Name a precise architectural, scaling, or security challenge *implied* by their ' +
+      'signals (e.g., multi-sig coordination under load, settlement finality risk under adversarial ' +
+      'conditions, key management at HSM tier, intent-relay latency).',
+    valueDrop:
+      '**Value Drop** — One sentence on how iDECP addresses this. ' +
+      'Choose the angle that fits: Minimum Viable Architecture, Zero-Trust backends, ' +
+      'cross-chain security primitives, high-load async systems, or HSM-grade key management.',
+  },
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatUSD(amount: number | null | undefined): string {
@@ -57,6 +141,7 @@ function formatUSD(amount: number | null | undefined): string {
 function buildUserPrompt(
   profile: ReturnType<typeof EnrichedProfileSchema.parse>,
   annotation: ReviewAnnotationPartial,
+  source: LeadSource,
 ): string {
   const { company, funding, product } = profile;
 
@@ -99,12 +184,13 @@ function buildUserPrompt(
 **Tech stack:** ${stackLine}
 **Competency cells:** ${topCells || '(none scored)'}
 **Reviewer context:** ${reviewerContext || '(none)'}
+**Source angle:** ${SOURCE_ANGLE[source]}
 
 ## 4-Sentence Framework
 
 1. **Hook** — Acknowledge their recent funding and reference 1–2 specific signals from their architecture or stack above. Make it clear you did your homework, not a template scan.
-2. **Hypothesis** — Name a precise architectural, scaling, or security challenge *implied* by their signals (e.g., multi-sig coordination under load, settlement finality risk under adversarial conditions, key management at HSM tier, intent-relay latency).
-3. **Value Drop** — One sentence on how iDECP addresses this. Choose the angle that fits: Minimum Viable Architecture, Zero-Trust backends, cross-chain security primitives, high-load async systems, or HSM-grade key management.
+2. ${FRAMEWORK_BY_SOURCE[source].hypothesis}
+3. ${FRAMEWORK_BY_SOURCE[source].valueDrop}
 4. **CTA** — One low-friction question. No calendar link. No "let's hop on a call." No pressure.
 
 ## Requirements
@@ -218,9 +304,10 @@ async function main(): Promise<void> {
       continue;
     }
 
-    process.stdout.write(`  → ${companyLabel}… `);
+    const source = detectSource(profile);
+    process.stdout.write(`  → ${companyLabel} [${source}]… `);
 
-    const userPrompt = buildUserPrompt(profile, annotation);
+    const userPrompt = buildUserPrompt(profile, annotation, source);
 
     const geminiModel = genAI.getGenerativeModel({
       model: MODEL,

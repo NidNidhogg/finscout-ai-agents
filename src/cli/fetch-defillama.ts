@@ -16,6 +16,7 @@ import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { EnrichedProfileSchema } from '../schema/enrichedProfile';
 import type { EnrichedProfile } from '../schema/enrichedProfile';
+import { resolveCanonicalUrl } from '../utils/urlUtils';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -24,7 +25,6 @@ const DEFILLAMA_URL = 'https://api.llama.fi/protocols';
 const MIN_TVL = 10_000_000;
 const MAX_TVL = 100_000_000;
 const INSERT_LIMIT = 5;
-const URL_RESOLVE_TIMEOUT_MS = 8_000;
 
 const TARGET_CATEGORIES = new Set([
   'Bridge',
@@ -51,48 +51,6 @@ interface DLProtocol {
   url?: string | null;
   category?: string | null;
   chains?: string[];
-}
-
-// ── URL utilities ─────────────────────────────────────────────────────────────
-
-function addScheme(raw: string): string {
-  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-}
-
-const TRACKING_PARAM = /^(utm_|fbclid$|gclid$|mc_eid$|ref$)/;
-
-function stripTrackingParams(rawUrl: string): string {
-  try {
-    const u = new URL(rawUrl);
-    for (const key of [...u.searchParams.keys()]) {
-      if (TRACKING_PARAM.test(key)) u.searchParams.delete(key);
-    }
-    const path = u.pathname.replace(/\/$/, '');
-    return u.origin + path + u.search;
-  } catch {
-    return rawUrl;
-  }
-}
-
-/**
- * Follow redirects to the canonical URL, strip tracking params.
- * Returns null if the URL is dead (non-2xx, DNS failure, timeout).
- * Falls back from HEAD to the normalised input on 405 (server rejects HEAD).
- */
-async function resolveCanonicalUrl(raw: string): Promise<string | null> {
-  const url = addScheme(raw);
-  try {
-    const resp = await fetch(url, {
-      method: 'HEAD',
-      redirect: 'follow',
-      signal: AbortSignal.timeout(URL_RESOLVE_TIMEOUT_MS),
-    });
-    if (resp.status === 405) return stripTrackingParams(url); // live but HEAD blocked
-    if (!resp.ok) return null;
-    return stripTrackingParams(resp.url);
-  } catch {
-    return null; // timeout, ECONNREFUSED, DNS NXDOMAIN, etc.
-  }
 }
 
 // ── Handle normaliser ─────────────────────────────────────────────────────────
