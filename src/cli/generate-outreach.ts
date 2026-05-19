@@ -1,21 +1,23 @@
 /**
- * Module C — Soft Launch outreach draft generator.
- * Reads all `reviewed` queue items, generates a personalised cold email for each
- * using the Baron Sever / 4-sentence framework, writes a single Markdown file to
- * data/exports/, and flips each record's status to `drafted`.
+ * Module C — Agent Loop outreach draft generator.
+ * Reads all `reviewed` queue items, runs AgentExecutionHarness for each
+ * (research via Firecrawl + X tools → draft), writes a Markdown export,
+ * and updates each record's status to `drafted` or `discarded`.
  *
  * Usage:
  *   npx ts-node src/cli/generate-outreach.ts
  *
- * Requires: GEMINI_API_KEY, REVIEW_DB_PATH (optional, defaults to data/review-queue.db)
+ * Requires: GEMINI_API_KEY, FIRECRAWL_API_KEY, X_BEARER_TOKEN
+ *           REVIEW_DB_PATH (optional, defaults to data/review-queue.db)
  */
 
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import Database from 'better-sqlite3';
 import { EnrichedProfileSchema } from '../schema/enrichedProfile';
+import { AgentExecutionHarness, NO_SIGNALS_SENTINEL } from '../agent/AgentExecutionHarness';
+import type { RunContext } from '../agent/AgentExecutionHarness';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -31,18 +33,13 @@ interface QueueRow {
   annotation_json: string | null;
 }
 
-interface ReviewAnnotationPartial {
-  tier?: string;
-  tierReason?: string;
-  reviewerNote?: string;
-}
-
 interface EmailDraft {
   profileId: string;
   companyName: string;
   xHandle: string;
   subject: string;
   body: string;
+  budgetExhausted: boolean;
 }
 
 // ── Source routing ────────────────────────────────────────────────────────────
@@ -66,167 +63,70 @@ const SOURCE_ANGLE: Record<LeadSource, string> = {
   unknown:         'direct / manual injection',
 };
 
-// Steps 2–3 of the 4-sentence framework vary by source. Step 1 (Hook) and Step 4 (CTA) are invariant.
 const FRAMEWORK_BY_SOURCE: Record<LeadSource, { hypothesis: string; valueDrop: string }> = {
   'x-radar': {
     hypothesis:
-      '**Hypothesis** — Name a precise architectural risk *implied* by their stack and raise stage. ' +
+      'Name a precise architectural risk implied by their stack and raise stage. ' +
       'Focus on post-raise technical debt traps: premature abstractions locked in at MVP phase, ' +
       'synchronous bottlenecks that survive into production, missing observability at persistence ' +
       'boundaries, or auth/key management shortcuts that compound into security liabilities at scale.',
     valueDrop:
-      '**Value Drop** — One sentence on how iDECP\'s MVA approach eliminates this. ' +
-      'Angle: a 6–12 week Minimum Viable Architecture engagement is purpose-built to avoid the ' +
+      'One sentence on how iDECP\'s MVA approach eliminates this. ' +
+      'Angle: a 6–12 week Minimum Viable Architecture engagement avoids the ' +
       '"quick and dirty" trap — the architectural choices made in weeks 1–4 post-raise that cause ' +
-      '70% of teams to hit a hard scaling wall at 12 months. Result: 40% less technical debt, ' +
-      'no throwaway code. "Start Fast and Simple, Build Right."',
+      '70% of teams to hit a hard scaling wall at 12 months. 40% less technical debt, no throwaway code.',
   },
   'funding-radar': {
     hypothesis:
-      '**Hypothesis** — Name a precise architectural risk *implied* by their stack and raise stage. ' +
+      'Name a precise architectural risk implied by their stack and raise stage. ' +
       'Focus on post-raise technical debt traps: premature abstractions locked in at MVP phase, ' +
       'synchronous bottlenecks that survive into production, missing observability at persistence ' +
       'boundaries, or auth/key management shortcuts that compound into security liabilities at scale.',
     valueDrop:
-      '**Value Drop** — One sentence on how iDECP\'s MVA approach eliminates this. ' +
-      'Angle: a 6–12 week Minimum Viable Architecture engagement is purpose-built to avoid the ' +
+      'One sentence on how iDECP\'s MVA approach eliminates this. ' +
+      'Angle: a 6–12 week Minimum Viable Architecture engagement avoids the ' +
       '"quick and dirty" trap — the architectural choices made in weeks 1–4 post-raise that cause ' +
-      '70% of teams to hit a hard scaling wall at 12 months. Result: 40% less technical debt, ' +
-      'no throwaway code. "Start Fast and Simple, Build Right."',
+      '70% of teams to hit a hard scaling wall at 12 months. 40% less technical debt, no throwaway code.',
   },
   cryptorank: {
     hypothesis:
-      '**Hypothesis** — Name a precise architectural risk *implied* by their stack and raise stage. ' +
+      'Name a precise architectural risk implied by their stack and raise stage. ' +
       'Focus on post-raise technical debt traps: premature abstractions locked in at MVP phase, ' +
       'synchronous bottlenecks that survive into production, missing observability at persistence ' +
       'boundaries, or auth/key management shortcuts that compound into security liabilities at scale.',
     valueDrop:
-      '**Value Drop** — One sentence on how iDECP\'s MVA approach eliminates this. ' +
-      'Angle: a 6–12 week Minimum Viable Architecture engagement is purpose-built to avoid the ' +
+      'One sentence on how iDECP\'s MVA approach eliminates this. ' +
+      'Angle: a 6–12 week Minimum Viable Architecture engagement avoids the ' +
       '"quick and dirty" trap — the architectural choices made in weeks 1–4 post-raise that cause ' +
-      '70% of teams to hit a hard scaling wall at 12 months. Result: 40% less technical debt, ' +
-      'no throwaway code. "Start Fast and Simple, Build Right."',
+      '70% of teams to hit a hard scaling wall at 12 months. 40% less technical debt, no throwaway code.',
   },
   defillama: {
     hypothesis:
-      '**Hypothesis** — Name a precise architectural, scaling, or security challenge *implied* by their ' +
-      'signals (e.g., multi-sig coordination under load, settlement finality risk under adversarial ' +
-      'conditions, key management at HSM tier, intent-relay latency).',
+      'Name a precise architectural, scaling, or security challenge implied by their signals ' +
+      '(e.g., multi-sig coordination under load, settlement finality risk under adversarial conditions, ' +
+      'key management at HSM tier, intent-relay latency).',
     valueDrop:
-      '**Value Drop** — One sentence on how iDECP addresses this. ' +
+      'One sentence on how iDECP addresses this. ' +
       'Choose the angle that fits: Zero-Trust backends, MVA for high-load async systems, ' +
       'cross-chain security primitives, or HSM-grade key management.',
   },
   unknown: {
     hypothesis:
-      '**Hypothesis** — Name a precise architectural, scaling, or security challenge *implied* by their ' +
-      'signals (e.g., multi-sig coordination under load, settlement finality risk under adversarial ' +
-      'conditions, key management at HSM tier, intent-relay latency).',
+      'Name a precise architectural, scaling, or security challenge implied by their signals ' +
+      '(e.g., multi-sig coordination under load, settlement finality risk under adversarial conditions, ' +
+      'key management at HSM tier, intent-relay latency).',
     valueDrop:
-      '**Value Drop** — One sentence on how iDECP addresses this. ' +
+      'One sentence on how iDECP addresses this. ' +
       'Choose the angle that fits: Minimum Viable Architecture, Zero-Trust backends, ' +
       'cross-chain security primitives, high-load async systems, or HSM-grade key management.',
   },
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatUSD(amount: number | null | undefined): string {
-  if (!amount) return 'undisclosed';
-  if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(0)}M`;
-  if (amount >= 1_000) return `$${(amount / 1_000).toFixed(0)}k`;
-  return `$${amount}`;
-}
-
-function buildUserPrompt(
-  profile: ReturnType<typeof EnrichedProfileSchema.parse>,
-  annotation: ReviewAnnotationPartial,
-  source: LeadSource,
-): string {
-  const { company, funding, product } = profile;
-
-  const fundingLine = [
-    formatUSD(funding.claimed?.amountUSD),
-    funding.claimed?.stage?.replace('_', '-') ?? '',
-    funding.claimed?.rawText ? `— "${funding.claimed.rawText}"` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  const stackLine =
-    product.stackMentions.length > 0 ? product.stackMentions.join(', ') : '(none detected via crawl)';
-
-  const archLine =
-    product.architectureTerms.length > 0
-      ? product.architectureTerms.join(', ')
-      : '(none detected via crawl)';
-
-  const topCells = product.competencyCellMatches
-    .filter((c) => c.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 2)
-    .map((c) => `${c.cell} (score: ${c.score.toFixed(2)})`)
-    .join(', ');
-
-  const reviewerContext = [annotation.tierReason, annotation.reviewerNote]
-    .filter(Boolean)
-    .join(' — ');
-
-  return `Write a cold outbound email from Baron Sever to the founders of the following company.
-
-## Target Company
-
-**Name:** ${company.name}
-**X Handle:** ${company.xHandle ?? '(unknown)'}
-**Website:** ${company.websiteUrl ?? '(none)'}
-**Funding event:** ${fundingLine}
-**Architecture signals:** ${archLine}
-**Tech stack:** ${stackLine}
-**Competency cells:** ${topCells || '(none scored)'}
-**Reviewer context:** ${reviewerContext || '(none)'}
-**Source angle:** ${SOURCE_ANGLE[source]}
-
-## 4-Sentence Framework
-
-1. **Hook** — Acknowledge their recent funding and reference 1–2 specific signals from their architecture or stack above. Make it clear you did your homework, not a template scan.
-2. ${FRAMEWORK_BY_SOURCE[source].hypothesis}
-3. ${FRAMEWORK_BY_SOURCE[source].valueDrop}
-4. **CTA** — One low-friction question. No calendar link. No "let's hop on a call." No pressure.
-
-## Requirements
-
-- Subject line: lowercase, ≤8 words, technical (no exclamation marks, no "congrats on the raise", no "quick question")
-- Salutation: Hey [first name], — leave [first name] as a literal placeholder
-- Body: 4 sentences only. No filler opener. No "I came across your company."
-- Sign-off: Baron
-- Do NOT include a company name or title in the sign-off
-
-## Output format (strict — no markdown, no extra text)
-
-SUBJECT: <subject line>
-
-<full email including salutation and sign-off>`;
-}
-
-function parseModelResponse(raw: string): { subject: string; body: string } {
-  const lines = raw.trim().split('\n');
-  const subjectLine = lines.find((l) => l.toLowerCase().startsWith('subject:'));
-  const subject = subjectLine ? subjectLine.replace(/^subject:\s*/i, '').trim() : '(no subject)';
-
-  // Body starts after the blank line following SUBJECT:
-  const subjectIdx = lines.findIndex((l) => l.toLowerCase().startsWith('subject:'));
-  const bodyLines = subjectIdx >= 0 ? lines.slice(subjectIdx + 1) : lines;
-  const body = bodyLines
-    .join('\n')
-    .replace(/^\n+/, '')
-    .trim();
-
-  return { subject, body };
-}
+// ── Markdown rendering ────────────────────────────────────────────────────────
 
 function renderMarkdown(drafts: EmailDraft[], generatedAt: string): string {
   const header = [
-    '# iDECP Outreach Drafts — Soft Launch',
+    '# iDECP Outreach Drafts — Agent Loop',
     '',
     `**Generated:** ${generatedAt}  `,
     `**Model:** ${MODEL}  `,
@@ -239,18 +139,15 @@ function renderMarkdown(drafts: EmailDraft[], generatedAt: string): string {
   ].join('\n');
 
   const sections = drafts.map((d, i) => {
-    return [
+    const lines = [
       `## ${i + 1}. ${d.companyName} · ${d.xHandle}`,
       '',
-      `**Subject:** \`${d.subject}\``,
-      '',
-      '```',
-      d.body,
-      '```',
-      '',
-      '---',
-      '',
-    ].join('\n');
+    ];
+    if (d.budgetExhausted) {
+      lines.push('> **Note:** Draft produced via fallback after iteration budget exhausted.', '');
+    }
+    lines.push(`**Subject:** \`${d.subject}\``, '', '```', d.body, '```', '', '---', '');
+    return lines.join('\n');
   });
 
   return header + sections.join('\n');
@@ -259,17 +156,38 @@ function renderMarkdown(drafts: EmailDraft[], generatedAt: string): string {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const apiKey = process.env['GEMINI_API_KEY'];
-  if (!apiKey) {
+  const geminiApiKey = process.env['GEMINI_API_KEY'];
+  if (!geminiApiKey) {
     console.error('[generate-outreach] ERROR: GEMINI_API_KEY is required.');
     process.exit(1);
   }
 
+  const firecrawlApiKey = process.env['FIRECRAWL_API_KEY'];
+  if (!firecrawlApiKey) {
+    console.error('[generate-outreach] ERROR: FIRECRAWL_API_KEY is required.');
+    process.exit(1);
+  }
+
+  const xBearerToken = process.env['X_BEARER_TOKEN'];
+  if (!xBearerToken) {
+    console.error('[generate-outreach] ERROR: X_BEARER_TOKEN is required.');
+    process.exit(1);
+  }
+
   const db = new Database(DB_PATH);
-  const genAI = new GoogleGenerativeAI(apiKey);
+
+  const harness = new AgentExecutionHarness({
+    db,
+    geminiApiKey,
+    firecrawlApiKey,
+    xBearerToken,
+    model: MODEL,
+  });
 
   const rows = db
-    .prepare<[], QueueRow>(`SELECT id, profile_json, annotation_json FROM queue_items WHERE status = 'reviewed'`)
+    .prepare<[], QueueRow>(
+      `SELECT id, profile_json, annotation_json FROM queue_items WHERE status = 'reviewed'`,
+    )
     .all();
 
   if (rows.length === 0) {
@@ -277,75 +195,66 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  console.log(`[generate-outreach] Found ${rows.length} reviewed profile(s). Drafting…\n`);
+  console.log(`[generate-outreach] Found ${rows.length} reviewed profile(s). Running agent loop…\n`);
 
   const drafts: EmailDraft[] = [];
-  const draftStmt = db.prepare<[string], void>(`UPDATE queue_items SET status = 'drafted' WHERE id = ?`);
-  const discardStmt = db.prepare<[string], void>(`UPDATE queue_items SET status = 'discarded' WHERE id = ?`);
   let discarded = 0;
+  let failed = 0;
 
   for (const row of rows) {
     const profile = EnrichedProfileSchema.parse(JSON.parse(row.profile_json));
-    const annotation: ReviewAnnotationPartial = row.annotation_json
-      ? (JSON.parse(row.annotation_json) as ReviewAnnotationPartial)
-      : {};
+    const source = detectSource(profile);
+    const framework = FRAMEWORK_BY_SOURCE[source];
+
+    const context: RunContext = {
+      sourceAngle: SOURCE_ANGLE[source],
+      hypothesis: framework.hypothesis,
+      valueDrop: framework.valueDrop,
+    };
 
     const companyLabel = `${profile.company.name} (${profile.company.xHandle ?? row.id.slice(0, 8)})`;
-
-    // Circuit breaker: skip profiles with no actionable technical signals
-    const hasSignals =
-      profile.product.stackMentions.length > 0 ||
-      profile.product.architectureTerms.length > 0;
-
-    if (!hasSignals) {
-      console.log(`  ⚡ ${companyLabel} — no technical signals, skipping LLM call → discarded`);
-      discardStmt.run(row.id);
-      discarded++;
-      continue;
-    }
-
-    const source = detectSource(profile);
     process.stdout.write(`  → ${companyLabel} [${source}]… `);
 
-    const userPrompt = buildUserPrompt(profile, annotation, source);
+    try {
+      const record = await harness.run(row.id, context);
 
-    const geminiModel = genAI.getGenerativeModel({
-      model: MODEL,
-      systemInstruction:
-        'You are Baron Sever, a Senior Architect and CBDO of iDECP Venture Builder (DeFi | Equity, Crypto, and Payments). ' +
-        'Your style is sophisticated, highly technical, direct, and zero-fluff. ' +
-        'You speak founder-to-founder and architect-to-architect.',
-    });
+      const isNoSignals =
+        record.draftBody === NO_SIGNALS_SENTINEL ||
+        (record.status === 'budget_exhausted' && !record.draftBody?.trim());
 
-    const result = await geminiModel.generateContent(userPrompt);
-    const rawText = result.response.text();
-
-    const { subject, body } = parseModelResponse(rawText);
-
-    drafts.push({
-      profileId: row.id,
-      companyName: profile.company.name,
-      xHandle: profile.company.xHandle ?? '',
-      subject,
-      body,
-    });
-
-    draftStmt.run(row.id);
-    console.log('done');
+      if (isNoSignals) {
+        console.log('agent found no signals → discarded');
+        discarded++;
+      } else {
+        drafts.push({
+          profileId: row.id,
+          companyName: profile.company.name,
+          xHandle: profile.company.xHandle ?? '',
+          subject: record.draftSubject ?? '(no subject)',
+          body: record.draftBody ?? '',
+          budgetExhausted: record.status === 'budget_exhausted',
+        });
+        const budgetNote =
+          record.status === 'budget_exhausted' ? ` [budget_exhausted @ iter ${record.iterationCount}]` : '';
+        console.log(`done (${record.iterationCount} iteration(s)${budgetNote})`);
+      }
+    } catch (err: unknown) {
+      console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      failed++;
+    }
   }
 
-  // Write markdown file
   fs.mkdirSync(EXPORTS_DIR, { recursive: true });
   const ts = new Date().toISOString().replace(/T/, ' ').replace(/\..+/, '');
   const fileTs = ts.replace(/[ :]/g, '-');
   const outPath = path.join(EXPORTS_DIR, `outreach-drafts-${fileTs}.md`);
-  const markdown = renderMarkdown(drafts, ts);
-  fs.writeFileSync(outPath, markdown, 'utf-8');
+  fs.writeFileSync(outPath, renderMarkdown(drafts, ts), 'utf-8');
 
   console.log(`\n[generate-outreach] ${drafts.length} draft(s) written → ${outPath}`);
-  if (discarded > 0) {
-    console.log(`[generate-outreach] ${discarded} profile(s) discarded (circuit breaker: no technical signals).`);
-  }
+  if (discarded > 0)
+    console.log(`[generate-outreach] ${discarded} discarded (agent found no technical signals).`);
+  if (failed > 0)
+    console.log(`[generate-outreach] ${failed} failed (agent error — status rolled back to reviewed).`);
 }
 
 main().catch((err: unknown) => {
