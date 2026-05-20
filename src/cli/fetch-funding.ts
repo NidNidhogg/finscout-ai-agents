@@ -147,6 +147,7 @@ function buildProfile(opts: {
         rawText: buildRawText(opts.handle, opts.amountUSD, opts.stage),
         amountUSD: opts.amountUSD,
         stage: opts.stage,
+        claimedAt: opts.postedAt,
       },
     },
     product: {

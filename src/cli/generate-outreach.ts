@@ -15,7 +15,7 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
-import { EnrichedProfileSchema } from '../schema/enrichedProfile';
+import { EnrichedProfileSchema, ReviewAnnotationSchema } from '../schema/enrichedProfile';
 import { AgentExecutionHarness, NO_SIGNALS_SENTINEL } from '../agent/AgentExecutionHarness';
 import type { RunContext } from '../agent/AgentExecutionHarness';
 
@@ -203,6 +203,18 @@ async function main(): Promise<void> {
 
   for (const row of rows) {
     const profile = EnrichedProfileSchema.parse(JSON.parse(row.profile_json));
+
+    // Hard stop: skip manually-reviewed Tier C profiles that slipped through
+    if (row.annotation_json) {
+      const annotation = ReviewAnnotationSchema.parse(JSON.parse(row.annotation_json));
+      if (annotation.tier === 'C') {
+        const companyLabel = `${profile.company.name} (${profile.company.xHandle ?? row.id.slice(0, 8)})`;
+        console.log(`  ⊘ ${companyLabel} — Tier C (${annotation.tierReason}) → skipped`);
+        discarded++;
+        continue;
+      }
+    }
+
     const source = detectSource(profile);
     const framework = FRAMEWORK_BY_SOURCE[source];
 

@@ -19,6 +19,8 @@ import { FirecrawlFetcher } from '../enrichment/website/FirecrawlFetcher';
 import { createWebsiteEnricher, WebsiteEnrichmentError } from '../enrichment/EnrichmentEngine';
 import { EnrichedProfileSchema, ReviewAnnotationSchema } from '../schema/enrichedProfile';
 import type { EnrichedProfile, ReviewAnnotation } from '../schema/enrichedProfile';
+import { scoreProfile } from '../sales-factory/scoreProfile';
+import type { IcpTier } from '../sales-factory/scoreProfile';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +48,8 @@ function buildAutoAnnotation(
   profile: EnrichedProfile,
   crawled: boolean,
   crawlFailed: boolean,
+  tier: Exclude<IcpTier, 'C'>,
+  scoredReason: string,
 ): ReviewAnnotation {
   const now = new Date().toISOString();
   const hasStack = profile.product.stackMentions.length > 0;
@@ -57,7 +61,7 @@ function buildAutoAnnotation(
 
   const adequate = missingEvidenceTypes.length === 0;
 
-  const tierReasonParts: string[] = [];
+  const tierReasonParts: string[] = [scoredReason];
   if (crawled) tierReasonParts.push('Firecrawl deep-crawl completed');
   else if (crawlFailed) tierReasonParts.push('Firecrawl failed — signals from source metadata only');
   else if (!hasWebsite) tierReasonParts.push('No websiteUrl — source metadata signals only');
@@ -72,11 +76,8 @@ function buildAutoAnnotation(
     reviewedBy: SYSTEM_REVIEWER,
     profileAdequate: adequate,
     missingEvidenceTypes,
-    tier: adequate ? 'B' : 'C',
-    tierReason: [
-      ...tierReasonParts,
-      ...(hasArch ? [`arch: ${profile.product.architectureTerms.slice(0, 3).join(', ')}`] : []),
-    ].join(' · ') || 'Auto-enriched',
+    tier,
+    tierReason: tierReasonParts.join(' · ') || 'Auto-enriched',
     crunchbaseCheck: { checked: false },
   });
 }
@@ -206,7 +207,16 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const annotation = buildAutoAnnotation(row.id, finalProfile, crawled, thisCrawlFailed);
+    // ICP scoring hard stop: discard Tier C before reaching outreach queue
+    const scored = scoreProfile(finalProfile);
+    if (scored.tier === 'C') {
+      discardStmt.run(JSON.stringify(finalProfile), now, row.id);
+      console.log(`    ⚡ Tier C → discarded (${scored.reason})`);
+      discarded++;
+      continue;
+    }
+
+    const annotation = buildAutoAnnotation(row.id, finalProfile, crawled, thisCrawlFailed, scored.tier, scored.reason);
     reviewStmt.run(JSON.stringify(finalProfile), now, JSON.stringify(annotation), row.id);
     reviewed++;
   }
