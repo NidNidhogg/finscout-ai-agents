@@ -48,7 +48,7 @@ Out of scope: Module B (Scoring Agent), LinkedIn outreach, automated tier predic
 ### 3.1 Queue Item
 
 ```typescript
-export type QueueItemStatus = 'pending' | 'reviewed' | 'dropped';
+export type QueueItemStatus = 'pending' | 'reviewed' | 'dropped' | 'needs_retry';
 
 export interface QueueItem {
   id: string;                 // same as profile.id (uuid)
@@ -60,7 +60,7 @@ export interface QueueItem {
 }
 ```
 
-**State machine:**
+**State machine (ReviewQueue API):**
 
 ```
 push()            →  pending
@@ -68,7 +68,19 @@ submitReview()    →  reviewed   (from pending or dropped; throws AlreadyReview
 drop()            →  dropped    (from pending only; throws AlreadyReviewedError if already reviewed)
 ```
 
-Rows are never deleted. `get()` returns items in any state.
+**Extended pipeline transitions (set by CLI scripts outside the ReviewQueue API):**
+
+```
+pending      →  needs_retry   (enrich-pending: crawl error + no signals — soft fail)
+needs_retry  →  reviewed      (enrich-pending re-run: crawl succeeds)
+needs_retry  →  discarded     (enrich-pending re-run: crawl succeeds but still no signals)
+reviewed     →  drafted       (generate-outreach / AgentExecutionHarness)
+reviewed     →  agent-running (AgentExecutionHarness)
+drafted      →  sent          (review-outreach HITL: approved)
+drafted      →  discarded     (review-outreach HITL: rejected)
+```
+
+`needs_retry` carries `annotation_json = { "error": "<crawl error message>" }` for observability. Rows are never deleted. `get()` returns items in any state.
 
 ### 3.2 Metrics Types
 
@@ -95,6 +107,7 @@ export interface ReviewQueueStats {
   pendingCount: number;
   reviewedCount: number;
   droppedCount: number;
+  needsRetryCount: number;  // items quarantined for soft-fail retry
   dod: DoDMetrics;
 }
 ```
@@ -278,7 +291,7 @@ CLI rendering and interactive input are implementation details and are not teste
 
 ### Group E: getStats & Schema Enforcement
 
-- AC-022: `getStats()` returns `ReviewQueueStats` with live `pendingCount`, `reviewedCount`, `droppedCount`, and `dod` computed by passing all reviewed `ReviewedRecord` pairs (profile + annotation) through `calculateDoDMetrics()`; dropped items are excluded from the `dod` input.
+- AC-022: `getStats()` returns `ReviewQueueStats` with live `pendingCount`, `reviewedCount`, `droppedCount`, `needsRetryCount`, and `dod` computed by passing all reviewed `ReviewedRecord` pairs (profile + annotation) through `calculateDoDMetrics()`; dropped items are excluded from the `dod` input.
 
 ---
 

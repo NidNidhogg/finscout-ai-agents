@@ -23,10 +23,20 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 
 `queue_items.status` lifecycle extended:
 ```
-pending → reviewed → agent-running → drafted
-                                   → discarded   (draft_body = 'NO_SIGNALS_FOUND')
-                   → reviewed       (on harness error — rollback for retry)
+pending      → reviewed      (enrich-pending: Tier A/B with signals)
+pending      → needs_retry   (enrich-pending: crawl failed + no signals — soft fail)
+pending      → discarded     (enrich-pending: Tier C or no signals after successful crawl)
+needs_retry  → reviewed      (enrich-pending re-run: crawl succeeds)
+needs_retry  → discarded     (enrich-pending re-run: signals still absent)
+reviewed     → agent-running (AgentExecutionHarness: in progress)
+agent-running → drafted      (AgentExecutionHarness: draft written)
+agent-running → discarded    (AgentExecutionHarness: draft_body = 'NO_SIGNALS_FOUND')
+agent-running → reviewed     (on harness error — rollback for retry)
+drafted      → sent          (review-outreach HITL: approved)
+drafted      → discarded     (review-outreach HITL: rejected)
 ```
+
+**`needs_retry` invariant for the harness:** The harness only processes `reviewed` items. It must never touch `needs_retry` items — those are exclusively owned by `enrich-pending.ts`. If a harness run encounters a `needs_retry` item in its query scope, that is a bug in the query predicate.
 
 ---
 

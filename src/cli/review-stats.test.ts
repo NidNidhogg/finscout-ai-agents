@@ -6,6 +6,7 @@ function makeStats(overrides: Partial<ReviewQueueStats> = {}): ReviewQueueStats 
     pendingCount: 3,
     reviewedCount: 10,
     droppedCount: 1,
+    needsRetryCount: 0,
     dod: {
       totalReviewed: 10,
       adequacyRate: 0.8,

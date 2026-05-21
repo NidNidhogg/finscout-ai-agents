@@ -1,6 +1,6 @@
 # FinScout — Architecture Reference
 
-**Module A (Discovery & Enrichment) — frozen 2026-05-15**
+**Module A (Discovery & Enrichment) + Module C (Outreach/HITL) — operational 2026-05-21**
 
 ---
 
@@ -29,18 +29,19 @@ A profile missing all three legs is marked `profileAdequate: false` with the cor
 
 ---
 
-## 3-Stage Pipeline
+## 4-Stage Pipeline
 
-The pipeline is structured into three discrete stages, each backed by a dedicated CLI script. Stages are decoupled: each reads from and writes to the SQLite queue independently.
+The pipeline is structured into four discrete stages, each backed by a dedicated CLI script. All four are chained by the `npm run scout` orchestrator using `&&` — a non-zero exit from any stage halts the chain. Stages are otherwise decoupled: each reads from and writes to the SQLite queue independently.
 
 | Stage | CLI | Input source | Queue transition |
 |---|---|---|---|
-| **1 — Ingestion** | `fetch-defillama.ts` | DefiLlama API (live TVL data) | insert `pending` |
-| **1 — Ingestion (alt)** | `run-enrichment.ts` | X API v2 tweet firehose | insert `pending` |
-| **2 — Enrichment** | `enrich-pending.ts` | `pending` items | `pending → reviewed` or `discarded` |
-| **3 — Generation** | `generate-outreach.ts` | `reviewed` items | `reviewed → drafted` or `discarded` |
+| **1a — X-Radar** | `fetch-funding.ts` | X API v2 (Web3/DeFi funding tweets) | insert `pending` |
+| **1b — DefiLlama** | `fetch-defillama.ts` | DefiLlama API (live TVL data) | insert `pending` |
+| **2 — Enrichment** | `enrich-pending.ts` | `pending` + `needs_retry` items | `→ reviewed`, `→ needs_retry`, or `→ discarded` |
+| **3 — Generation** | `generate-outreach.ts` | `reviewed` items | `→ drafted` or `→ discarded` |
+| **4 — HITL Review** | `review-outreach.ts` | `drafted` items | `→ sent` or `→ discarded` |
 
-The queue item `status` column (`pending → reviewed | discarded → drafted`) is the coordination primitive. No message broker required; SQLite `INSERT OR IGNORE` and `UPDATE … WHERE id = ?` provide sufficient concurrency control for single-operator use.
+The queue item `status` column is the coordination primitive. No message broker required; SQLite `INSERT OR IGNORE` and `UPDATE … WHERE id = ?` provide sufficient concurrency control for single-operator use. This is a deliberate MVA constraint: adding Redis or SQS introduces ops overhead before signal quality is validated.
 
 ---
 
@@ -175,10 +176,30 @@ CREATE TABLE IF NOT EXISTS queue_items (
 **Valid transitions:**
 
 ```
-pending ──► reviewed   (submitReview — requires valid ReviewAnnotation)
-pending ──► dropped    (drop)
-reviewed ──► *         BLOCKED  (AlreadyReviewedError thrown)
+pending      ──► reviewed     (enrich-pending: Tier A/B, signals present)
+pending      ──► needs_retry  (enrich-pending: crawl failed + no signals — soft fail)
+pending      ──► discarded    (enrich-pending: Tier C or no signals after successful crawl)
+needs_retry  ──► reviewed     (enrich-pending re-run: crawl succeeds on retry)
+needs_retry  ──► discarded    (enrich-pending re-run: crawl succeeds but still no signals)
+needs_retry  ──► needs_retry  (enrich-pending re-run: crawl fails again)
+reviewed     ──► drafted      (generate-outreach: LLM draft written)
+reviewed     ──► discarded    (generate-outreach: second circuit breaker, no signals)
+reviewed     ──► agent-running (AgentExecutionHarness: in progress)
+drafted      ──► sent         (review-outreach HITL: approved)
+drafted      ──► discarded    (review-outreach HITL: rejected)
+pending      ──► dropped      (ReviewQueue.drop() — programmatic)
+reviewed     ──► *            BLOCKED (AlreadyReviewedError thrown by ReviewQueue.submitReview)
 ```
+
+**Soft-fail vs hard-fail routing (enrich-pending.ts):**
+
+| Condition | Routing | Rationale |
+|-----------|---------|-----------|
+| Crawl error (network / timeout / 429) + no signals | `needs_retry` | Error is transient; lead may be valid |
+| Crawl succeeded (or no URL) + no signals | `discarded` | No signals despite best effort; genuinely empty |
+| Any crawl outcome + Tier C score | `discarded` | Logical hard fail; X-signal data itself scored low |
+
+`annotation_json` for `needs_retry` items contains `{ "error": "Firecrawl failed — no signals extractable: <reason>" }` so `audit-discards.ts` can surface them for review.
 
 `push()` uses `INSERT OR IGNORE` — pushing a profile with a duplicate UUID is a no-op, not an error.
 
@@ -296,9 +317,13 @@ crunchbaseCheck
 
 ### Firecrawl failures
 
-`WebsiteEnrichmentError` (and its subtypes `PageFetchTimeoutError`, `PageFetchNetworkError`) are caught in `EnrichmentEngine.enrich()`. The profile is still composed using only X signal data (`websiteData = null`). The profile enters the queue as a lite profile. It is **not** recorded in `failedCandidates` — partial data is better than losing the lead entirely.
+`WebsiteEnrichmentError` (and its subtypes `PageFetchTimeoutError`, `PageFetchNetworkError`) are caught in `EnrichmentEngine.enrich()`. The profile is still composed using only X signal data (`websiteData = null`). The profile enters the queue as a lite profile.
 
-Any other error from `websiteEnricher.enrich()` (unexpected) propagates up and is caught by `run()`, recording the candidate in `failedCandidates`.
+In `enrich-pending.ts`, if the Firecrawl error leaves the profile with no technical signals, the item is routed to `needs_retry` (not `discarded`) — the crawl failure is treated as transient, not a judgment about lead quality. The error message is persisted in `annotation_json` for audit via `audit-discards.ts`.
+
+Items in `needs_retry` are automatically re-selected by `enrich-pending.ts` (`WHERE status IN ('pending', 'needs_retry')`). On the next run, Firecrawl is attempted again. If it succeeds, the item graduates to `reviewed`; if it fails again, it remains `needs_retry`.
+
+Any unexpected (non-`WebsiteEnrichmentError`) error propagates up and is caught by `run()`, recording the candidate in `failedCandidates`.
 
 ### ProfileComposer failures
 
@@ -349,10 +374,12 @@ A single match discards the candidate with label `f2:anti_vocab_match`. No Firec
 
 Applied at two points downstream of ingestion. The condition is the same at both points: `profile.product.stackMentions.length === 0 && profile.product.architectureTerms.length === 0`.
 
-1. **Post-enrichment (Stage 2):** After the Firecrawl crawl completes (or fails), if no technical signals are present, the profile is set to `discarded`. No `ReviewAnnotation` is generated; no reviewed slot is consumed.
+1. **Post-enrichment (Stage 2):** After the Firecrawl crawl completes (or fails), if no technical signals are present:
+   - If the crawl **failed** (network/timeout error) → `needs_retry` (soft fail). The error message is stored in `annotation_json`. The item re-enters Stage 2 on the next `enrich-pending` run automatically.
+   - If the crawl **succeeded or was skipped** → `discarded` (hard fail). No `ReviewAnnotation` is generated; no reviewed slot is consumed.
 2. **Pre-LLM (Stage 3):** Before each Gemini API call, the check runs again. `reviewed` profiles with no signals are set to `discarded` without consuming an API credit.
 
-The dual-stage circuit breaker prevents content-free prompts from reaching the LLM and ensures every Baron Sever email is grounded in verified technical signals extracted from the company's own website.
+The dual-stage circuit breaker prevents content-free prompts from reaching the LLM and ensures every Baron Sever email is grounded in verified technical signals extracted from the company's own website. The soft-fail path prevents false negatives from Firecrawl service interruptions.
 
 ---
 

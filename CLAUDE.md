@@ -33,9 +33,33 @@
 ## Stack-Specific Rules
 
 - Use Zod for ALL input validation and schema definitions — no raw type assertions at system boundaries.
-- Centralize all Redis configuration in `src/config/redis.ts`; never instantiate Redis clients inline.
 - No `any` type outside of test files.
 - All async functions must have explicit return types.
+
+## Pipeline State Machine
+
+Valid `queue_items.status` values (TypeScript: `QueueItemStatus` in `src/review-queue/types.ts`):
+
+| Status | Owner | Meaning |
+|--------|-------|---------|
+| `pending` | `fetch-funding.ts`, `fetch-defillama.ts`, `inject-*.ts` | Awaiting enrichment |
+| `needs_retry` | `enrich-pending.ts` | Soft fail — crawl error + no signals; re-selected next run |
+| `reviewed` | `enrich-pending.ts`, `AgentExecutionHarness` | Enriched + scored Tier A/B; awaiting draft |
+| `drafted` | `generate-outreach.ts`, `AgentExecutionHarness` | Draft written; awaiting HITL approval |
+| `sent` | `review-outreach.ts` | Approved and sent via `IMailSender` |
+| `discarded` | `enrich-pending.ts`, `generate-outreach.ts`, `review-outreach.ts` | Hard fail or human rejection |
+| `dropped` | `ReviewQueue.drop()` | Programmatic drop (ReviewQueue API) |
+| `agent-running` | `AgentExecutionHarness` | Agent loop in progress |
+
+**Soft-fail rule:** Network/API errors (Firecrawl timeout, 429, scraping block) → `needs_retry`. Logical misses (Tier C, no signals after successful crawl) → `discarded`. Never route a transient error to `discarded`.
+
+## Orchestrator
+
+`npm run scout` chains the four pipeline stages:
+```
+fetch-funding.ts && enrich-pending.ts && generate-outreach.ts && review-outreach.ts
+```
+MVA constraint: this `&&` chain in `package.json` is the only orchestrator. No message brokers, no workers, no schedulers.
 
 ## MCP Context Modules Active
 

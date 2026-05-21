@@ -129,7 +129,7 @@ async function main(): Promise<void> {
 
   const db = new Database(DB_PATH);
   const rows = db
-    .prepare<[], QueueRow>(`SELECT id, profile_json FROM queue_items WHERE status = 'pending'`)
+    .prepare<[], QueueRow>(`SELECT id, profile_json FROM queue_items WHERE status IN ('pending', 'needs_retry')`)
     .all();
 
   if (rows.length === 0) {
@@ -154,11 +154,19 @@ async function main(): Promise<void> {
      WHERE id = ?`,
   );
 
+  // Soft-fail: network/scraping errors go to quarantine, not permanent discard.
+  const retryStmt = db.prepare<[string, string, string, string], void>(
+    `UPDATE queue_items
+     SET profile_json = ?, status = 'needs_retry', reviewed_at = ?, annotation_json = ?
+     WHERE id = ?`,
+  );
+
   let enriched = 0;
   let skippedCrawl = 0;
   let crawlFailed = 0;
   let reviewed = 0;
   let discarded = 0;
+  let retried = 0;
 
   for (const row of rows) {
     const profile = EnrichedProfileSchema.parse(JSON.parse(row.profile_json));
@@ -170,6 +178,7 @@ async function main(): Promise<void> {
     let finalProfile = profile;
     let crawled = false;
     let thisCrawlFailed = false;
+    let crawlErrorMsg = '';
 
     if (!websiteUrl) {
       process.stdout.write('no websiteUrl — skipping crawl\n');
@@ -190,8 +199,8 @@ async function main(): Promise<void> {
         console.log(`    arch:  ${arch}`);
         enriched++;
       } catch (err) {
-        const msg = err instanceof WebsiteEnrichmentError ? err.message : String(err);
-        process.stdout.write(`crawl failed: ${msg}\n`);
+        crawlErrorMsg = err instanceof WebsiteEnrichmentError ? err.message : String(err);
+        process.stdout.write(`crawl failed: ${crawlErrorMsg}\n`);
         thisCrawlFailed = true;
         crawlFailed++;
       }
@@ -199,11 +208,20 @@ async function main(): Promise<void> {
 
     const now = new Date().toISOString();
 
-    // Circuit breaker: discard profiles with no extractable technical signals
+    // Circuit breaker: no extractable technical signals.
+    // If the crawl failed (network/scraping error), quarantine for retry rather
+    // than permanently discarding — the missing signals may be a crawl artifact.
     if (!hasSubstantiveSignals(finalProfile)) {
-      discardStmt.run(JSON.stringify(finalProfile), now, row.id);
-      console.log(`    ⚡ no technical signals → discarded`);
-      discarded++;
+      if (thisCrawlFailed) {
+        const errorAnnotation = JSON.stringify({ error: `Firecrawl failed — no signals extractable: ${crawlErrorMsg}` });
+        retryStmt.run(JSON.stringify(finalProfile), now, errorAnnotation, row.id);
+        console.log(`    ⏳ crawl failed + no signals → needs_retry`);
+        retried++;
+      } else {
+        discardStmt.run(JSON.stringify(finalProfile), now, row.id);
+        console.log(`    ⚡ no technical signals → discarded`);
+        discarded++;
+      }
       continue;
     }
 
@@ -223,11 +241,12 @@ async function main(): Promise<void> {
 
   console.log(`
 [enrich-pending] Done.
-  Crawled:       ${enriched}
-  Skipped crawl: ${skippedCrawl}
-  Crawl errors:  ${crawlFailed}
-  → reviewed:    ${reviewed}
-  → discarded:   ${discarded} (circuit breaker: no technical signals)`);
+  Crawled:        ${enriched}
+  Skipped crawl:  ${skippedCrawl}
+  Crawl errors:   ${crawlFailed}
+  → reviewed:     ${reviewed}
+  → needs_retry:  ${retried} (soft fail: crawl error + no signals)
+  → discarded:    ${discarded} (hard fail: no signals / Tier C)`);
 }
 
 main().catch((err: unknown) => {

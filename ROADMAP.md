@@ -2,9 +2,9 @@
 
 ---
 
-## Phase 1 — Module A: Discovery & Enrichment
+## Phase 1 — Module A + Module C: Discovery, Enrichment & Outreach
 
-**Status: COMPLETE — frozen 2026-05-15**
+**Status: COMPLETE — operational 2026-05-21**
 
 ### Delivered
 
@@ -25,8 +25,15 @@
 | Idempotency | 3-layer guard: candidate dedup, in-memory URL Set, cross-run `websiteCrawl.lastFetched` check |
 | Export | `review-export.ts` → flat JSON array, input to Module C |
 | DefiLlama ingestion | `fetch-defillama.ts` — ICP-filtered TVL $10M–$100M, URL normalizer (redirect resolver + dead-URL discard), cross-run dedup by `websiteUrl`, no API key required |
-| Enrichment pass | `enrich-pending.ts` — Firecrawl deep-crawl on pending queue, stack + arch signal merge, circuit breaker (no technical signals → `discarded`), auto `ReviewAnnotation` |
+| Enrichment pass | `enrich-pending.ts` — Firecrawl deep-crawl on `pending` + `needs_retry` queue items, stack + arch signal merge, two-path circuit breaker: crawl error + no signals → `needs_retry` (soft fail); no signals after successful crawl → `discarded` (hard fail); Tier C → `discarded`; auto `ReviewAnnotation` for Tier A/B |
 | Outreach generation | `generate-outreach.ts` — Gemini 2.0 Flash, Baron Sever persona, 4-sentence framework (Hook → Hypothesis → Value Drop → CTA), writes `data/exports/outreach-drafts-*.md`, second circuit breaker pre-LLM |
+| HITL review CLI | `review-outreach.ts` — interactive approval queue; Tier A → B → C sort + freshest-first within tier; Approve/Edit/Discard/Skip; VS Code (`--wait`) editor with nano fallback; `MockMailSender` transitions to `sent` |
+| MailSender abstraction | `IMailSender` interface + `MockMailSender` in `src/services/mail-sender.ts`; `EmailDraft` canonical type; decouples send logic from HITL CLI |
+| Pipeline orchestrator | `npm run scout` — `fetch-funding.ts && enrich-pending.ts && generate-outreach.ts && review-outreach.ts`; `&&` chain halts on any non-zero exit; MVA constraint: no message broker |
+| Queue dashboard | `queue-dashboard.ts` — ANSI-coloured ASCII table, all statuses, tier distribution, active/inactive split |
+| Discard audit | `audit-discards.ts` (`npm run audit-discards`) — groups discards by rejection category with bar chart; surfaces 5 most recent for false-negative spot-checking |
+| needs_retry state | Quarantine status for transient failures; `QueueItemStatus` union updated; `enrich-pending.ts` re-selects these items; `annotation_json` stores error reason for audit |
+| X-Radar ingestion | `fetch-funding.ts` — Web3/DeFi funding signal ingestion from X API v2; first-person + VC bypass rules; `TRUSTED_CRYPTO_VCS` allowlist (~70 entries); Linktree/aggregator URL unpacking; $1M floor |
 
 ### Known Gaps (Backlog — not blocking Phase 2)
 
@@ -41,15 +48,13 @@
 
 ## Phase 2 — Outreach Automation & Signal Expansion
 
-**Status: PLANNED**
+**Status: IN PROGRESS**
 
-### LinkedIn / Email Sender Integration (HITL)
+### Real Email Sender Integration
 
-Integrate a mail sender adapter (SendGrid or Resend) behind a `MailSender` interface. Human-in-the-loop gate: operator reviews and approves drafts before any send action is triggered.
+`IMailSender` interface and `MockMailSender` are already implemented (`src/services/mail-sender.ts`). The HITL CLI (`review-outreach.ts`) already uses `MockMailSender` and transitions approved items to `sent`. What remains is the concrete adapter.
 
-- `MailSender` interface: `send(draft): Promise<void>` — injected; no-op stub in current soft launch
-- `ConcreteMailSender`: SendGrid or Resend REST adapter
-- `send-outreach.ts` CLI: reads `drafted` queue items, sends via `MailSender`, transitions to `sent`
+- `ConcreteMailSender`: SendGrid or Resend REST adapter implementing `IMailSender` — drop-in replacement for `MockMailSender`
 - Rate-limited: ≤ 20 emails/day in MVP
 - Unsubscribe token embedded per email; honoured immediately on click
 - Bounce and reply tracking via provider webhook → updates queue status

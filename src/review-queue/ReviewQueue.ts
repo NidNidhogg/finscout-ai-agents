@@ -126,6 +126,7 @@ export function createReviewQueue({ db }: { db: Database.Database }) {
       pendingCount: countMap['pending'] ?? 0,
       reviewedCount: countMap['reviewed'] ?? 0,
       droppedCount: countMap['dropped'] ?? 0,
+      needsRetryCount: countMap['needs_retry'] ?? 0,
       dod: calculateDoDMetrics(reviewedRecords),
     };
   }

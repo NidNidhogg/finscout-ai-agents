@@ -1,56 +1,73 @@
 # FinScout — Autonomous Sales Factory
 
-Autonomous three-stage sales pipeline for iDECP's Web3/DeFi outbound. Ingests live on-chain protocol data, enriches company profiles via deep website crawl, and generates precision cold outreach under the Baron Sever persona.
+Autonomous four-stage sales pipeline for iDECP's Web3/DeFi outbound. Ingests live funding signals from X and on-chain protocol data, enriches company profiles via deep website crawl, generates precision cold outreach under the Baron Sever persona, and presents drafts for human approval via an interactive HITL CLI.
 
-**v1.0 · Module A + Module C (Soft Launch) · 386 tests · 0 errors**
+**v1.1 · Module A + Module C (Operational) · 386 tests · 0 errors**
 
 ---
 
 ## Golden Path
 
 ```bash
-npx ts-node src/cli/fetch-defillama.ts    # Stage 1 — Ingest ICP protocols from DefiLlama
-npx ts-node src/cli/enrich-pending.ts     # Stage 2 — Deep-crawl + signal extraction
-npx ts-node src/cli/generate-outreach.ts  # Stage 3 — Generate Baron Sever outreach drafts
+npm run scout
 ```
 
-Output: `data/exports/outreach-drafts-YYYY-MM-DD-HH-MM-SS.md` — human-in-the-loop. Review, edit, send manually.
+`scout` is the single-command MVA orchestrator. It chains the four pipeline stages with `&&` — if any stage exits non-zero the chain halts immediately, preventing downstream API waste.
+
+Equivalent to:
+
+```bash
+npx ts-node src/cli/fetch-funding.ts      # Stage 1 — X-Radar: ingest Web3/DeFi funding signals
+npx ts-node src/cli/enrich-pending.ts     # Stage 2 — Firecrawl deep-crawl + ICP scoring
+npx ts-node src/cli/generate-outreach.ts  # Stage 3 — Baron Sever outreach drafts via Gemini
+npx ts-node src/cli/review-outreach.ts    # Stage 4 — HITL approval: Approve / Edit / Discard
+```
 
 ---
 
 ## Pipeline Overview
 
 ```
-DefiLlama API ──►  URL Normalizer  ──────────────────────────────────────────────┐
-                   (redirect follow,                                               │
-                    tracking-param strip,                                          │
-                    dead-URL discard)                                              │
-                                                                                  │
-X API v2 ──────►   5-stage filter chain  ────────────────────────────────────────┤
-                   (F1 template · F2 anti-vocab · F3 density ·                    │
-                    F5 funding floor · F4 company resolver)                        │
-                                                                                  │
-                                                                                  ▼
-                                                                        ReviewQueue (SQLite)
-                                                                        status: pending
-                                                                                  │
-                                                                                  ▼
-                                                                        Firecrawl deep-crawl
-                                                                        (two-phase async)
-                                                                                  │
-                                                                                  ▼
-                                                                      ⚡ Circuit Breaker
-                                                                        (no signals → discard)
-                                                                                  │
-                                                                                  ▼
-                                                                        status: reviewed
-                                                                                  │
-                                                                                  ▼
-                                                                        Gemini 2.0 Flash
-                                                                        Baron Sever · 4-sentence
-                                                                                  │
-                                                                                  ▼
-                                                                data/exports/outreach-drafts-*.md
+X API v2 ───────►  X-Radar filter chain  ────────────────────────────────────────┐
+  fetch-funding      (first-person / VC bypass · $1M floor ·                      │
+                      Web3/DeFi niche · Linktree unpack)                           │
+                                                                                   │
+DefiLlama API ──►  URL Normalizer  ──────────────────────────────────────────────┤
+  fetch-defillama   (redirect follow · tracking-param strip · dead-URL discard)   │
+                                                                                   │
+                                                                                   ▼
+                                                                         ReviewQueue (SQLite)
+                                                                         status: pending
+                                                                                   │
+                                                                                   ▼
+                                                                         Firecrawl deep-crawl
+                                                                         (two-phase async)
+                                                                                   │
+                                                                     ┌─────────────┴──────────────┐
+                                                                     │                            │
+                                                              crawl error?                   crawl ok?
+                                                            no signals yet              signals present?
+                                                                     │                            │
+                                                                     ▼                      ┌─────┴──────┐
+                                                            ⏳ needs_retry              no signals    signals
+                                                            (soft fail —             (hard discard) (scored)
+                                                             re-runs next pass)            │            │
+                                                                                           ▼            ▼
+                                                                                       discarded    reviewed
+                                                                                                        │
+                                                                                                        ▼
+                                                                                          Gemini 2.0 Flash
+                                                                                          Baron Sever · 4-sentence
+                                                                                                        │
+                                                                                                        ▼
+                                                                                             status: drafted
+                                                                                                        │
+                                                                                                        ▼
+                                                                                          HITL review-outreach.ts
+                                                                                          Approve / Edit / Discard
+                                                                                                        │
+                                                                                                        ▼
+                                                                                             status: sent
 ```
 
 ---
@@ -72,14 +89,14 @@ Optional:
 | `EXPORT_PATH` | `data/exports/reviewed-YYYY-MM-DD.json` | Output path for `review-export` |
 | `X_SEARCH_QUERY` | See below | X ingestion query string |
 
-**Default `X_SEARCH_QUERY`:**
+**Default `X_SEARCH_QUERY`** (set in `fetch-funding.ts`):
 ```
-(raised OR "seed round" OR "pre-seed" OR "series a" OR "in funding" OR "funding round")
-(web3 OR defi OR crypto OR blockchain)
--is:retweet lang:en
+("raised" OR "funding" OR "investing in")
+("web3" OR "crypto" OR "defi" OR "stablecoin" OR "stablecoins" OR "yield" OR "blockchain" OR "protocol")
+-is:retweet -is:reply lang:en
 ```
 
-`has:links` is intentionally absent. URL-less tweets produce lite profiles (X data only, no Firecrawl call).
+Stage/amount terms are deliberately absent from the query — extraction and threshold checks happen in the filter chain, not the API query. URL-less tweets produce lite profiles (X data only, no Firecrawl call).
 
 ---
 
@@ -122,7 +139,35 @@ Or source variables explicitly before calling `npx ts-node`.
 
 ## CLI Commands
 
-### Stage 1 — `fetch-defillama.ts` — DefiLlama ingestion
+### Orchestrator — `npm run scout`
+
+Runs the full four-stage pipeline sequentially. Each stage must exit 0 before the next starts.
+
+```bash
+npm run scout
+```
+
+No flags. All configuration is via environment variables. If Stage 1 finds no new leads the chain still runs Stages 2–4 (which will be no-ops if the queue is empty).
+
+---
+
+### Stage 1a — `fetch-funding.ts` — X-Radar ingestion
+
+Polls X API v2 for Web3/DeFi funding announcements. Applies the filter chain: first-person/VC bypass gate → $1M funding floor → Linktree/aggregator URL unpacking → dedup by `normalizedName`. Inserts qualifying profiles as `pending`. Handles X API rate limits gracefully (logs retry delay, exits 0).
+
+```bash
+npx ts-node src/cli/fetch-funding.ts
+```
+
+**Requires:** `X_BEARER_TOKEN`
+
+**Filter bypass rules:**
+- **Brand bypass** — tweet contains a first-person funding phrase (`"we've raised"`, `"thrilled to announce"`, etc.)
+- **VC bypass** — author handle/bio matches `TRUSTED_CRYPTO_VCS` allowlist (~70 entries) AND tweet contains `"investing in"`, OR tweet body contains `"led by"` / `"backed by"` a trusted VC
+
+---
+
+### Stage 1b — `fetch-defillama.ts` — DefiLlama ingestion
 
 Fetches live protocol data from `api.llama.fi/protocols` (no API key required). Filters to ICP: TVL $10M–$100M, categories `Bridge | Dexes | Lending | Yield | Liquid Staking`. Resolves canonical URLs (follows redirects, strips tracking params, drops dead sites). Inserts up to 5 new profiles per run into the pending queue. Idempotent by resolved `websiteUrl`.
 
@@ -149,7 +194,16 @@ No env vars required beyond `REVIEW_DB_PATH` (optional).
 
 ### Stage 2 — `enrich-pending.ts` — Firecrawl enrichment pass
 
-Selects all `pending` queue items. Runs Firecrawl two-phase deep-crawl on each with a `websiteUrl`. Merges extracted stack and architecture signals into `profile_json`. Applies circuit breaker: profiles where both `stackMentions` and `architectureTerms` are empty after crawl are set to `discarded`. Remaining profiles receive an auto-generated `ReviewAnnotation` (tier B/C) and are promoted to `reviewed`. Idempotent: already-crawled profiles carry forward without a new Firecrawl call.
+Selects all `pending` **and** `needs_retry` queue items. Runs Firecrawl two-phase deep-crawl on each with a `websiteUrl`. Merges extracted stack and architecture signals into `profile_json`. Applies a two-path circuit breaker:
+
+| Condition | Status transition |
+|-----------|------------------|
+| Crawl failed (network/timeout) + no signals | `needs_retry` — soft fail, quarantined for next run |
+| Crawl succeeded/skipped + no signals | `discarded` — hard fail, lead is genuinely empty |
+| Scored Tier C (regardless of crawl outcome) | `discarded` — logical hard fail |
+| Tier A or B with signals | `reviewed` — auto `ReviewAnnotation` generated |
+
+`needs_retry` items re-enter the loop automatically on the next `enrich-pending` run. Idempotent: already-crawled profiles carry forward without a new Firecrawl call.
 
 ```bash
 npx ts-node src/cli/enrich-pending.ts
@@ -163,15 +217,18 @@ npx ts-node src/cli/enrich-pending.ts
   → Velodrome (@VelodromeFinance)      crawled 4 page(s)
     stack: Solidity, Python
     arch:  amm, dex, liquidity, vault
-  → SomeProtocol (abc12345)            crawl failed: PageFetchNetworkError
+  → RheaLend (@rhea_finance)           crawl failed: PageFetchNetworkError
+    ⏳ crawl failed + no signals → needs_retry
+  → NoiseCo (abc12345)                 no websiteUrl — skipping crawl
     ⚡ no technical signals → discarded
 
 [enrich-pending] Done.
-  Crawled:       2
-  Skipped crawl: 0
-  Crawl errors:  1
-  → reviewed:    2
-  → discarded:   1 (circuit breaker: no technical signals)
+  Crawled:        1
+  Skipped crawl:  1
+  Crawl errors:   1
+  → reviewed:     1
+  → needs_retry:  1 (soft fail: crawl error + no signals)
+  → discarded:    1 (hard fail: no signals / Tier C)
 ```
 
 ---
@@ -194,6 +251,27 @@ npx ts-node src/cli/generate-outreach.ts
 
 [generate-outreach] 2 draft(s) written → data/exports/outreach-drafts-2026-05-15-07-58-17.md
 ```
+
+---
+
+### Stage 4 — `review-outreach.ts` — HITL approval CLI
+
+Presents every `drafted` item sorted Tier A → B → C, then by `enqueued_at` DESC (freshest leads first within each tier). For each item an interactive menu offers four actions:
+
+| Action | Result |
+|--------|--------|
+| ✅ Approve & Send | `MockMailSender.send()` → status `sent` |
+| ✏️ Edit Draft | Opens VS Code (`code --wait`), falls back to `nano`; persists edits to `agent_runs` |
+| 🗑️ Reject / Discard | status `discarded` |
+| ⏭️ Skip for Now | advances to next item, no status change |
+
+Ctrl+C exits gracefully with a sent/discarded/skipped summary.
+
+```bash
+npx ts-node src/cli/review-outreach.ts
+```
+
+No env vars required beyond `REVIEW_DB_PATH` (optional).
 
 ---
 
@@ -229,6 +307,38 @@ npx ts-node src/cli/inject-diamonds.ts
 ```
 
 No env vars required. Edit the `DIAMONDS` array in-file before running.
+
+---
+
+#### `queue-dashboard.ts` — Pipeline status dashboard
+
+Prints a live ASCII table of all queue items: company, website, tier, status (colour-coded), and enqueued timestamp. Active items appear first; `dropped`/`discarded` items are rendered in a dimmed section below.
+
+```bash
+npx ts-node src/cli/queue-dashboard.ts
+```
+
+---
+
+#### `audit-discards.ts` — False-negative audit
+
+Reads all `discarded` items, groups them by rejection-reason category (Firecrawl failure, timeout, no-signals, Tier C, etc.), and prints a summary bar chart plus the 5 most recently discarded items for spot-checking.
+
+```bash
+npm run audit-discards
+```
+
+Use this after a pipeline run to detect false negatives before they are permanently lost.
+
+---
+
+#### `inject-checker.ts` — Single-lead injection (demo/test)
+
+Passes a specific tweet through the real filter chain, scores it as Tier A, and inserts it as `drafted` with a pre-written Baron Sever email in `agent_runs`. Used to validate the end-to-end path without a live X API call.
+
+```bash
+npx ts-node src/cli/inject-checker.ts
+```
 
 ---
 

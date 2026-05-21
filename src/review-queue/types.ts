@@ -22,10 +22,11 @@ export interface ReviewQueueStats {
   pendingCount: number;
   reviewedCount: number;
   droppedCount: number;
+  needsRetryCount: number;
   dod: DoDMetrics;
 }
 
-export type QueueItemStatus = 'pending' | 'reviewed' | 'dropped';
+export type QueueItemStatus = 'pending' | 'reviewed' | 'dropped' | 'needs_retry';
 
 export interface QueueItem {
   id: string;
