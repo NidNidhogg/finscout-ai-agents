@@ -118,6 +118,7 @@ function parseRow(row: QueueRow): DisplayRow {
 }
 
 // Strip ANSI codes to measure printable column width.
+// eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 function visLen(s: string): number {
   return s.replace(ANSI_RE, '').length;

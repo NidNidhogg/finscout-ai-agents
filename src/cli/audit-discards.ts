@@ -112,6 +112,7 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+// eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 function visLen(s: string): number { return s.replace(ANSI_RE, '').length; }
 function pad(s: string, w: number): string { return s + ' '.repeat(Math.max(0, w - visLen(s))); }
