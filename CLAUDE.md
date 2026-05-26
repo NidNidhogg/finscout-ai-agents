@@ -36,6 +36,13 @@
 - No `any` type outside of test files.
 - All async functions must have explicit return types.
 
+## Anti-Hallucination Policy — X/Twitter Handles
+
+- NEVER invent or guess X/Twitter handles from company names, domains, or any other heuristic.
+- If a verified handle is not returned by the enrichment pipeline, `xHandle` MUST be `null`. No exceptions.
+- Fall back to the verified `websiteUrl` domain for all outreach targeting when a handle is absent.
+- This rule is invariant and overrides any instruction requesting a "best guess" or "probable" handle.
+
 ## Pipeline State Machine
 
 Valid `queue_items.status` values (TypeScript: `QueueItemStatus` in `src/review-queue/types.ts`):
@@ -55,9 +62,9 @@ Valid `queue_items.status` values (TypeScript: `QueueItemStatus` in `src/review-
 
 ## Orchestrator
 
-`npm run scout` chains the four pipeline stages:
+`npm run scout` chains five pipeline stages:
 ```
-fetch-funding.ts && enrich-pending.ts && generate-outreach.ts && review-outreach.ts
+fetch-funding.ts && enrich-pending.ts && generate-outreach.ts && review-outreach.ts && npm run export
 ```
 MVA constraint: this `&&` chain in `package.json` is the only orchestrator. No message brokers, no workers, no schedulers.
 

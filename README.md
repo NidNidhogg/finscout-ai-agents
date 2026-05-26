@@ -12,7 +12,7 @@ Autonomous four-stage sales pipeline for iDECP's Web3/DeFi outbound. Ingests liv
 npm run scout
 ```
 
-`scout` is the single-command MVA orchestrator. It chains the four pipeline stages with `&&` — if any stage exits non-zero the chain halts immediately, preventing downstream API waste.
+`scout` is the single-command MVA orchestrator. It chains five pipeline stages with `&&` — if any stage exits non-zero the chain halts immediately, preventing downstream API waste. On successful completion, an Excel export is generated automatically.
 
 Equivalent to:
 
@@ -21,6 +21,7 @@ npx ts-node src/cli/fetch-funding.ts      # Stage 1 — X-Radar: ingest Web3/DeF
 npx ts-node src/cli/enrich-pending.ts     # Stage 2 — Firecrawl deep-crawl + ICP scoring
 npx ts-node src/cli/generate-outreach.ts  # Stage 3 — Baron Sever outreach drafts via Gemini
 npx ts-node src/cli/review-outreach.ts    # Stage 4 — HITL approval: Approve / Edit / Discard
+npx ts-node src/cli/export-all-leads.ts   # Stage 5 — Excel export: exports/real_pipeline.xlsx
 ```
 
 ---
@@ -141,13 +142,13 @@ Or source variables explicitly before calling `npx ts-node`.
 
 ### Orchestrator — `npm run scout`
 
-Runs the full four-stage pipeline sequentially. Each stage must exit 0 before the next starts.
+Runs the full five-stage pipeline sequentially. Each stage must exit 0 before the next starts. Stage 5 (Excel export) fires automatically on successful completion — no separate invocation required.
 
 ```bash
 npm run scout
 ```
 
-No flags. All configuration is via environment variables. If Stage 1 finds no new leads the chain still runs Stages 2–4 (which will be no-ops if the queue is empty).
+No flags. All configuration is via environment variables. If Stage 1 finds no new leads the chain still runs Stages 2–5 (which will be no-ops or produce an empty export if the queue is empty).
 
 ---
 
@@ -272,6 +273,25 @@ npx ts-node src/cli/review-outreach.ts
 ```
 
 No env vars required beyond `REVIEW_DB_PATH` (optional).
+
+---
+
+### Stage 5 — `export-all-leads.ts` — Excel export
+
+Queries the local SQLite database and writes a formatted Excel workbook to `exports/real_pipeline.xlsx`. Runs automatically as the final step of `npm run scout`, or on demand.
+
+```bash
+npm run export
+```
+
+No env vars required beyond `REVIEW_DB_PATH` (optional).
+
+**Output:** `exports/real_pipeline.xlsx`
+
+- All pipeline leads in a single sheet with column auto-filters enabled.
+- Rows are tier colour-coded: Tier A (green), Tier B (yellow), Tier C (red/orange).
+- Built with `exceljs` — no external spreadsheet service or API required.
+- File is overwritten on each run; archive copies manually if a historical snapshot is needed.
 
 ---
 
