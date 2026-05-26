@@ -36,7 +36,8 @@ interface QueueRow {
 interface EmailDraft {
   profileId: string;
   companyName: string;
-  xHandle: string;
+  xHandle: string | null;
+  websiteUrl: string | null;
   subject: string;
   body: string;
   budgetExhausted: boolean;
@@ -139,8 +140,13 @@ function renderMarkdown(drafts: EmailDraft[], generatedAt: string): string {
   ].join('\n');
 
   const sections = drafts.map((d, i) => {
+    // When xHandle is verified, show it; otherwise anchor on the website domain.
+    let identifier = d.xHandle ?? '';
+    if (!identifier && d.websiteUrl) {
+      try { identifier = new URL(d.websiteUrl).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
+    }
     const lines = [
-      `## ${i + 1}. ${d.companyName} · ${d.xHandle}`,
+      `## ${i + 1}. ${d.companyName} · ${identifier || '(no handle)'}`,
       '',
     ];
     if (d.budgetExhausted) {
@@ -241,7 +247,8 @@ async function main(): Promise<void> {
         drafts.push({
           profileId: row.id,
           companyName: profile.company.name,
-          xHandle: profile.company.xHandle ?? '',
+          xHandle: profile.company.xHandle ?? null,
+          websiteUrl: profile.company.websiteUrl ?? null,
           subject: record.draftSubject ?? '(no subject)',
           body: record.draftBody ?? '',
           budgetExhausted: record.status === 'budget_exhausted',

@@ -7,7 +7,8 @@ import type { EnrichedProfile } from '../schema/enrichedProfile';
 export interface EmailDraft {
   profileId:       string;
   companyName:     string;
-  xHandle:         string;
+  /** Verified X handle (e.g. "@acme"). Null when no handle was confirmed by the source. */
+  xHandle:         string | null;
   subject:         string;
   body:            string;
   budgetExhausted: boolean;

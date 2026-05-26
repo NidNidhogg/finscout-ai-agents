@@ -28,7 +28,7 @@ TOOLS AVAILABLE:
 
 RESEARCH STRATEGY:
 1. Call crawl_website on the company website if one is provided.
-2. Call search_x_tweets targeting the company's X handle for recent technical posts.
+2. Call search_x_tweets targeting the company's X handle for recent technical posts. If X Handle is "(none)", skip search_x_tweets entirely — do NOT guess a handle.
 3. Stop once you have ≥1 concrete technical signal, or once both tools have been tried.
 
 EMAIL FRAMEWORK (4 sentences):
@@ -42,6 +42,12 @@ REQUIREMENTS:
 - Salutation: Hey [first name],
 - Body: exactly 4 sentences.
 - Sign-off: Baron (no company name, no title)
+
+STRICT HANDLE POLICY — MANDATORY:
+You are STRICTLY FORBIDDEN from inventing, guessing, or hallucinating an X (Twitter) handle based on a company name, domain, or any other heuristic.
+If the target's "X Handle" field is "(none)", you MUST NOT output any string prefixed with "@" anywhere in the email subject or body.
+When X Handle is "(none)", use the company's verified website domain as the primary asset identifier in your hook and subject line (e.g. "acme.io" not "@acme").
+Violation of this policy produces hallucinated output and is treated as a hard failure.
 
 OUTPUT FORMAT — choose exactly one:
 
@@ -578,8 +584,20 @@ export class AgentExecutionHarness {
       : 'No website URL available — skip crawl_website.';
 
     const step2 = company.xHandle
-      ? `Call search_x_tweets targeting "@${company.xHandle.replace(/^@/, '')}" for recent technical posts.`
-      : 'No X handle available — skip search_x_tweets.';
+      ? `Call search_x_tweets targeting "${company.xHandle.replace(/^@/, '')}" for recent technical posts.`
+      : 'X Handle is (none) — do NOT call search_x_tweets and do NOT invent a handle.';
+
+    // When no verified handle exists, compute the bare domain to give the LLM a concrete anchor.
+    const domainAnchor = (!company.xHandle && company.websiteUrl)
+      ? (() => {
+          try { return new URL(company.websiteUrl).hostname.replace(/^\./, '').replace(/^www\./, ''); }
+          catch { return null; }
+        })()
+      : null;
+
+    const handleNote = domainAnchor
+      ? `\n\n⚠️  NO X HANDLE: Do NOT invent or guess an X handle. Use the verified domain "${domainAnchor}" as the primary identifier in the subject line and hook.`
+      : '';
 
     return `Research and draft for the following company.
 
@@ -587,7 +605,7 @@ export class AgentExecutionHarness {
 Name: ${company.name}
 X Handle: ${company.xHandle ?? '(none)'}
 Website: ${company.websiteUrl ?? '(none)'}
-Funding: ${fundingLine}${reviewerContext ? `\nReviewer Notes: ${reviewerContext}` : ''}
+Funding: ${fundingLine}${reviewerContext ? `\nReviewer Notes: ${reviewerContext}` : ''}${handleNote}
 
 ## Research Plan
 1. ${step1}

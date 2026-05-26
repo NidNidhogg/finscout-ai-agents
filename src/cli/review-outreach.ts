@@ -78,11 +78,21 @@ function displayItem(item: DraftedItem, index: number, total: number): void {
   const { profile, tier, tierReason, draftSubject, draftBody } = item;
   const co = profile.company;
 
+  // Derive a display anchor: verified handle if available, else bare domain.
+  let contactAnchor: string | null = co.xHandle ?? null;
+  if (!contactAnchor && co.websiteUrl) {
+    try { contactAnchor = new URL(co.websiteUrl).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
+  }
+
   console.log(`\n${A.bold}${RULE}${A.reset}`);
   console.log(
     `  🏢  ${A.bold}${co.name}${A.reset}` +
     (co.xHandle ? `   ${A.dim}${co.xHandle}${A.reset}` : ''),
   );
+  if (!co.xHandle && contactAnchor) {
+    // No verified handle — surface domain as the primary contact anchor.
+    console.log(`  ⚠️   ${A.yellow}No verified X handle${A.reset}  →  primary anchor: ${A.bold}${contactAnchor}${A.reset}`);
+  }
   if (co.websiteUrl) {
     console.log(`  🌐  ${A.cyan}${co.websiteUrl}${A.reset}`);
   }
@@ -292,7 +302,7 @@ async function main(): Promise<void> {
         const draft: EmailDraft = {
           profileId:       item.id,
           companyName:     item.profile.company.name,
-          xHandle:         item.profile.company.xHandle ?? '',
+          xHandle:         item.profile.company.xHandle ?? null,
           subject:         item.draftSubject,
           body:            item.draftBody,
           budgetExhausted: false,
