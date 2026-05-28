@@ -273,7 +273,13 @@ async function main(): Promise<void> {
   // ── Save ─────────────────────────────────────────────────────────────────────
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  await wb.xlsx.writeFile(OUT_FILE);
+
+  const _d = new Date();
+  const timestamp = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
+  const OUT_FILE_VERSIONED = path.join(OUT_DIR, `real_pipeline_${timestamp}.xlsx`);
+
+  await wb.xlsx.writeFile(OUT_FILE_VERSIONED);
+  fs.copyFileSync(OUT_FILE_VERSIONED, OUT_FILE);
 
   const sizeKB = Math.round(fs.statSync(OUT_FILE).size / 1024);
   const tierA  = rows.filter((r) => {
@@ -285,7 +291,7 @@ async function main(): Promise<void> {
     return a?.tier === 'B';
   }).length;
 
-  console.log(`[export-all-leads] ✓ Workbook written → ${OUT_FILE} (${sizeKB} KB)`);
+  console.log(`[export-all-leads] ✓ Workbook written → ${OUT_FILE_VERSIONED}  +  ${OUT_FILE} (${sizeKB} KB)`);
   console.log(`[export-all-leads]   ${rows.length} rows  |  Tier A: ${tierA}  |  Tier B: ${tierB}`);
   console.log(`[export-all-leads]   Columns: ${COLUMNS.length}  |  Frozen header: yes  |  Colour-coded: yes`);
 }
