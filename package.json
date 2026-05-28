@@ -9,7 +9,7 @@
     "test": "jest",
     "lint": "eslint src/**",
     "audit-discards": "ts-node src/cli/audit-discards.ts",
-    "scout": "ts-node src/cli/fetch-funding.ts && ts-node src/cli/enrich-pending.ts && ts-node src/cli/generate-outreach.ts && ts-node src/cli/review-outreach.ts && npm run export",
+    "scout": "ts-node src/cli/fetch-defillama.ts && ts-node src/cli/fetch-funding.ts && ts-node src/cli/enrich-pending.ts && ts-node src/cli/generate-outreach.ts && npm run export",
     "review": "ts-node src/cli/review-outreach.ts",
     "export": "ts-node src/cli/export-all-leads.ts"
   },

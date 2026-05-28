@@ -12,17 +12,19 @@ Autonomous four-stage sales pipeline for iDECP's Web3/DeFi outbound. Ingests liv
 npm run scout
 ```
 
-`scout` is the single-command MVA orchestrator. It chains five pipeline stages with `&&` — if any stage exits non-zero the chain halts immediately, preventing downstream API waste. On successful completion, an Excel export is generated automatically.
+`scout` is the headless MVA orchestrator — safe for unattended and cron execution. It chains five pipeline stages with `&&` — if any stage exits non-zero the chain halts immediately, preventing downstream API waste. No interactive prompts are issued. On successful completion, a dated snapshot and master Excel workbook are generated automatically.
 
 Equivalent to:
 
 ```bash
-npx ts-node src/cli/fetch-funding.ts      # Stage 1 — X-Radar: ingest Web3/DeFi funding signals
-npx ts-node src/cli/enrich-pending.ts     # Stage 2 — Firecrawl deep-crawl + ICP scoring
-npx ts-node src/cli/generate-outreach.ts  # Stage 3 — Baron Sever outreach drafts via Gemini
-npx ts-node src/cli/review-outreach.ts    # Stage 4 — HITL approval: Approve / Edit / Discard
-npx ts-node src/cli/export-all-leads.ts   # Stage 5 — Excel export: exports/real_pipeline.xlsx
+npx ts-node src/cli/fetch-defillama.ts    # Stage 1a — DeFiLlama: on-chain protocol signals
+npx ts-node src/cli/fetch-funding.ts      # Stage 1b — X-Radar: ingest Web3/DeFi funding signals
+npx ts-node src/cli/enrich-pending.ts     # Stage 2  — Firecrawl deep-crawl + ICP scoring
+npx ts-node src/cli/generate-outreach.ts  # Stage 3  — Baron Sever outreach drafts via Gemini
+npx ts-node src/cli/export-all-leads.ts   # Stage 4  — Excel export (auto): snapshot + master workbook
 ```
+
+Run `npm run review` in a separate interactive terminal to step through drafted outreach for HITL approval.
 
 ---
 
@@ -142,7 +144,7 @@ Or source variables explicitly before calling `npx ts-node`.
 
 ### Orchestrator — `npm run scout`
 
-Runs the full five-stage pipeline sequentially. Each stage must exit 0 before the next starts. Stage 5 (Excel export) fires automatically on successful completion — no separate invocation required.
+Runs the full headless pipeline sequentially (Stages 1a → 1b → 2 → 3 → 4). Each stage must exit 0 before the next starts. Stage 4 (Excel export) fires automatically on successful completion — no separate invocation required. Issues no interactive prompts; safe for cron and unattended execution.
 
 ```bash
 npm run scout
@@ -255,7 +257,9 @@ npx ts-node src/cli/generate-outreach.ts
 
 ---
 
-### Stage 4 — `review-outreach.ts` — HITL approval CLI
+### `npm run review` — HITL Approval (manual, interactive)
+
+> **Not part of `npm run scout`.** Run separately in an interactive terminal after the scout pipeline completes.
 
 Presents every `drafted` item sorted Tier A → B → C, then by `enqueued_at` DESC (freshest leads first within each tier). For each item an interactive menu offers four actions:
 
@@ -269,6 +273,8 @@ Presents every `drafted` item sorted Tier A → B → C, then by `enqueued_at` D
 Ctrl+C exits gracefully with a sent/discarded/skipped summary.
 
 ```bash
+npm run review
+# or directly:
 npx ts-node src/cli/review-outreach.ts
 ```
 
@@ -278,7 +284,7 @@ No env vars required beyond `REVIEW_DB_PATH` (optional).
 
 ### Stage 5 — `export-all-leads.ts` — Excel export
 
-Queries the local SQLite database and writes a formatted Excel workbook to `exports/real_pipeline.xlsx`. Runs automatically as the final step of `npm run scout`, or on demand.
+Queries the local SQLite database and writes a formatted Excel workbook. Runs automatically as the final step of `npm run scout`, or on demand.
 
 ```bash
 npm run export
@@ -286,12 +292,18 @@ npm run export
 
 No env vars required beyond `REVIEW_DB_PATH` (optional).
 
-**Output:** `exports/real_pipeline.xlsx`
+**Output — snapshot versioning:**
+
+| File | Purpose |
+|------|---------|
+| `exports/real_pipeline_YYYY-MM-DD.xlsx` | Dated snapshot — written first on each run; one file per calendar day, persists across runs |
+| `exports/real_pipeline.xlsx` | Master workbook — byte-copied from the dated snapshot; stable reference for downstream consumers |
+
+Both files are identical in content. The dated snapshot provides an automatic per-run audit trail using pure JS `Date` logic; no external tooling required. The master is overwritten on each run.
 
 - All pipeline leads in a single sheet with column auto-filters enabled.
 - Rows are tier colour-coded: Tier A (green), Tier B (yellow), Tier C (red/orange).
 - Built with `exceljs` — no external spreadsheet service or API required.
-- File is overwritten on each run; archive copies manually if a historical snapshot is needed.
 
 ---
 

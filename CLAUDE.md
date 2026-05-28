@@ -36,12 +36,13 @@
 - No `any` type outside of test files.
 - All async functions must have explicit return types.
 
-## Anti-Hallucination Policy — X/Twitter Handles
+## Anti-Hallucination Policy
 
 - NEVER invent or guess X/Twitter handles from company names, domains, or any other heuristic.
 - If a verified handle is not returned by the enrichment pipeline, `xHandle` MUST be `null`. No exceptions.
 - Fall back to the verified `websiteUrl` domain for all outreach targeting when a handle is absent.
 - This rule is invariant and overrides any instruction requesting a "best guess" or "probable" handle.
+- CeFi/CeDeFi companies lacking on-chain TVL data (e.g., neobanks not indexed by DeFiLlama) MUST be seeded with a hardcoded verified `websiteUrl` in the seeder dictionary (`src/cli/seed-neobanks.ts`). If no URL can be verified from authoritative sources, omit the key entirely — do not guess. Bare-name entries without a `websiteUrl` are discarded by `enrich-pending.ts`; this is the correct outcome, not a bug.
 
 ## Pipeline State Machine
 
@@ -62,11 +63,17 @@ Valid `queue_items.status` values (TypeScript: `QueueItemStatus` in `src/review-
 
 ## Orchestrator
 
-`npm run scout` chains five pipeline stages:
+`npm run scout` is the headless orchestrator — safe for unattended and cron execution. It chains five stages with `&&` and issues no interactive prompts:
 ```
-fetch-funding.ts && enrich-pending.ts && generate-outreach.ts && review-outreach.ts && npm run export
+fetch-defillama.ts && fetch-funding.ts && enrich-pending.ts && generate-outreach.ts && npm run export
 ```
 MVA constraint: this `&&` chain in `package.json` is the only orchestrator. No message brokers, no workers, no schedulers.
+
+`npm run review` is the separate manual step for HITL approval of drafted outreach:
+```
+ts-node src/cli/review-outreach.ts
+```
+Run `npm run review` in an interactive terminal after `npm run scout` completes. The two commands are intentionally decoupled — `scout` never blocks on CLI input.
 
 ## MCP Context Modules Active
 
