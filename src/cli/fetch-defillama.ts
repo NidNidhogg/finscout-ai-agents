@@ -42,6 +42,17 @@ const CATEGORY_ARCH_TERMS: Record<string, string[]> = {
   'Liquid Staking': ['restaking', 'validator', 'stablecoin'],
 };
 
+// Deterministic pain hypothesis per DeFiLlama category.
+// Stamped at ingestion; validated (or killed) by enrich-pending.ts in Stage 2.
+const CATEGORY_PAIN_HYPOTHESIS: Record<string, string> = {
+  Bridge:           'cross-chain settlement latency',
+  Dexes:            'MEV exposure / order routing',
+  Lending:          'liquidation execution reliability',
+  Yield:            'smart contract execution risk under liquidity stress',
+  'Liquid Staking': 'validator key management and slashing risk',
+};
+const DEFAULT_PAIN_HYPOTHESIS = 'on-chain execution reliability';
+
 // ── DefiLlama response shape (partial) ────────────────────────────────────────
 
 interface DLProtocol {
@@ -72,11 +83,14 @@ function formatTVL(tvl: number): string {
 function buildProfile(proto: DLProtocol, resolvedUrl: string): EnrichedProfile {
   const now = new Date().toISOString();
   const archTerms = CATEGORY_ARCH_TERMS[proto.category ?? ''] ?? [];
+  const painHypothesis =
+    CATEGORY_PAIN_HYPOTHESIS[proto.category ?? ''] ?? DEFAULT_PAIN_HYPOTHESIS;
 
   return EnrichedProfileSchema.parse({
     id: randomUUID(),
     enrichedAt: now,
     schemaVersion: '1.0.0',
+    painHypothesis,
     sources: {},
     company: {
       name: proto.name,

@@ -15,6 +15,7 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
+import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { FirecrawlFetcher } from '../enrichment/website/FirecrawlFetcher';
 import { createWebsiteEnricher, WebsiteEnrichmentError } from '../enrichment/EnrichmentEngine';
 import { EnrichedProfileSchema, ReviewAnnotationSchema } from '../schema/enrichedProfile';
@@ -26,6 +27,137 @@ import type { IcpTier } from '../sales-factory/scoreProfile';
 
 const DB_PATH = process.env['REVIEW_DB_PATH'] ?? 'data/review-queue.db';
 const SYSTEM_REVIEWER = 'system:enrich-pending';
+const FOUNDER_MODEL = 'gemini-2.0-flash';
+// Same cap as AgentExecutionHarness — keeps Gemini token cost predictable.
+const FOUNDER_MARKDOWN_CAP = 8_000;
+
+// ── Founder extraction ────────────────────────────────────────────────────────
+
+interface FounderSignal {
+  name?: string;
+  role?: string;
+  xHandle?: string;
+  linkedinUrl?: string;
+  githubUrl?: string;
+  bioSnippet?: string;
+  isFoundingEngineer?: boolean;
+}
+
+// Prioritise pages that are likely to name founders.
+const TEAM_PAGE_RE = /\/(about|team|founders?|people|leadership|crew)\b/i;
+
+// Concatenate markdown from crawled pages up to FOUNDER_MARKDOWN_CAP chars,
+// with team/about pages sorted first to maximise signal density.
+function buildFounderMarkdown(websiteMarkdown: Record<string, string>): string {
+  const entries = Object.entries(websiteMarkdown).sort(([a], [b]) => {
+    return (TEAM_PAGE_RE.test(a) ? 0 : 1) - (TEAM_PAGE_RE.test(b) ? 0 : 1);
+  });
+  let combined = '';
+  for (const [url, md] of entries) {
+    const chunk = `\n\n[Page: ${url}]\n${md}`;
+    const remaining = FOUNDER_MARKDOWN_CAP - combined.length;
+    if (remaining <= 100) break;
+    combined += chunk.length <= remaining ? chunk : chunk.slice(0, remaining);
+  }
+  return combined.trim();
+}
+
+function isValidUrl(s: unknown): s is string {
+  if (typeof s !== 'string' || !s) return false;
+  try { new URL(s); return true; } catch { return false; }
+}
+
+// GitHub profile URLs have exactly one non-empty path segment (/username).
+// Repo URLs (/org/repo) have two — we reject those to avoid noise.
+function isGithubProfileUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (!u.hostname.includes('github.com')) return false;
+    return u.pathname.split('/').filter(Boolean).length === 1;
+  } catch { return false; }
+}
+
+function normaliseFounder(f: Record<string, unknown>): FounderSignal {
+  const out: FounderSignal = {};
+  if (typeof f['name'] === 'string' && f['name'])       out.name       = f['name'];
+  if (typeof f['role'] === 'string' && f['role'])       out.role       = f['role'];
+  // xHandle must start with @ — if the LLM omitted it, ignore.
+  if (typeof f['xHandle'] === 'string' && f['xHandle'].startsWith('@'))
+                                                         out.xHandle    = f['xHandle'];
+  if (isValidUrl(f['linkedinUrl']) && String(f['linkedinUrl']).includes('linkedin.com'))
+                                                         out.linkedinUrl = String(f['linkedinUrl']);
+  if (isValidUrl(f['githubUrl']) && isGithubProfileUrl(String(f['githubUrl'])))
+                                                         out.githubUrl  = String(f['githubUrl']);
+  if (typeof f['bioSnippet'] === 'string' && f['bioSnippet'])
+                                                         out.bioSnippet = f['bioSnippet'];
+  if (typeof f['isFoundingEngineer'] === 'boolean')      out.isFoundingEngineer = f['isFoundingEngineer'];
+  return out;
+}
+
+// Calls Gemini at temperature=0 with a strict JSON schema.
+// Returns an empty array on any failure — founder extraction is non-fatal.
+// Anti-hallucination: the prompt explicitly forbids inference from company name/domain.
+async function extractFounders(
+  markdown: string,
+  geminiApiKey: string,
+): Promise<FounderSignal[]> {
+  if (!markdown) return [];
+
+  const genAI = new GoogleGenerativeAI(geminiApiKey);
+  const model = genAI.getGenerativeModel({
+    model: FOUNDER_MODEL,
+    generationConfig: {
+      temperature: 0,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: SchemaType.OBJECT,
+        properties: {
+          founders: {
+            type: SchemaType.ARRAY,
+            items: {
+              type: SchemaType.OBJECT,
+              properties: {
+                name:               { type: SchemaType.STRING },
+                role:               { type: SchemaType.STRING },
+                xHandle:            { type: SchemaType.STRING },
+                linkedinUrl:        { type: SchemaType.STRING },
+                githubUrl:          { type: SchemaType.STRING },
+                bioSnippet:         { type: SchemaType.STRING },
+                isFoundingEngineer: { type: SchemaType.BOOLEAN },
+              },
+            },
+          },
+        },
+        required: ['founders'],
+      },
+    },
+  });
+
+  const prompt = `Extract founder and C-suite leadership signals from the website markdown below.
+
+INVARIANT RULES — violation corrupts the sales pipeline:
+1. Only extract names, handles, and URLs that appear VERBATIM in the markdown.
+2. Do NOT infer, guess, or derive any value from company names, domain names, or surrounding context.
+3. Do NOT hallucinate. If you are not certain a value is literally present, set that field to an empty string.
+4. Only include people with a clear founding or C-suite role: CEO, CTO, CPO, co-founder, founding engineer. Exclude advisors, investors, and board members.
+5. xHandle: must start with @. Only include if the @ handle appears literally in the text.
+6. linkedinUrl: full https://linkedin.com/in/... URL only. Only if literally present.
+7. githubUrl: full https://github.com/<username> profile URL only (not a repo). Only if literally present.
+8. If no qualifying founder or C-suite executive is clearly identified, return {"founders": []}.
+
+MARKDOWN:
+${markdown}`;
+
+  const result = await model.generateContent(prompt);
+  const raw = JSON.parse(result.response.text()) as { founders?: unknown[] };
+
+  if (!Array.isArray(raw.founders)) return [];
+
+  return raw.founders
+    .filter((f): f is Record<string, unknown> => typeof f === 'object' && f !== null)
+    .map(normaliseFounder)
+    .filter((f) => Boolean(f.name ?? f.xHandle ?? f.linkedinUrl ?? f.githubUrl));
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,6 +167,13 @@ interface QueueRow {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// 2-second inter-crawl delay keeps us within Firecrawl's concurrency limit during
+// autonomous/cron runs. Applied only after a Firecrawl request was made (success or
+// error) — pure skips (no URL, already crawled) don't consume Firecrawl capacity.
+const CRAWL_THROTTLE_MS = 2_000;
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 function hasSubstantiveSignals(profile: EnrichedProfile): boolean {
   return (
@@ -126,6 +265,8 @@ async function main(): Promise<void> {
     console.error('[enrich-pending] ERROR: FIRECRAWL_API_KEY is required.');
     process.exit(1);
   }
+  // Optional — founder extraction is skipped gracefully when absent.
+  const geminiApiKey = process.env['GEMINI_API_KEY'];
 
   const db = new Database(DB_PATH);
   const rows = db
@@ -167,12 +308,15 @@ async function main(): Promise<void> {
   let reviewed = 0;
   let discarded = 0;
   let retried = 0;
+  let itemIndex = 0;
 
   for (const row of rows) {
+    itemIndex++;
     const profile = EnrichedProfileSchema.parse(JSON.parse(row.profile_json));
     const { name, xHandle, websiteUrl } = profile.company;
     const label = `${name} (${xHandle ?? row.id.slice(0, 8)})`;
 
+    console.log(`[enrich-pending] Processing item ${itemIndex} of ${rows.length}: ${name}…`);
     process.stdout.write(`  → ${label.padEnd(36)}`);
 
     let finalProfile = profile;
@@ -192,6 +336,29 @@ async function main(): Promise<void> {
         finalProfile = mergeEnrichment(profile, enrichData);
         crawled = true;
 
+        // Founder extraction — runs only when Gemini key is present.
+        // Non-fatal: any error falls through with founders staying empty.
+        if (geminiApiKey) {
+          const founderMd = buildFounderMarkdown(finalProfile.rawContent.websiteMarkdown);
+          if (founderMd) {
+            try {
+              const founders = await extractFounders(founderMd, geminiApiKey);
+              if (founders.length > 0) {
+                finalProfile = EnrichedProfileSchema.parse({
+                  ...finalProfile,
+                  team: { ...finalProfile.team, founders },
+                });
+                const names = founders
+                  .map((f) => `${f.name ?? f.xHandle ?? '?'}${f.role ? ` (${f.role})` : ''}`)
+                  .join(', ');
+                console.log(`\n    founders: ${names}`);
+              }
+            } catch {
+              // Extraction failed — continue without founder data.
+            }
+          }
+        }
+
         const stack = finalProfile.product.stackMentions.join(', ') || '—';
         const arch = finalProfile.product.architectureTerms.slice(0, 4).join(', ') || '—';
         process.stdout.write(`crawled ${enrichData.pagesFetched.length} page(s)\n`);
@@ -204,6 +371,13 @@ async function main(): Promise<void> {
         thisCrawlFailed = true;
         crawlFailed++;
       }
+    }
+
+    // Throttle: pause after every Firecrawl request before the next iteration.
+    // Placed here — before any `continue` — so it runs regardless of which
+    // circuit-breaker path the item takes.
+    if (crawled || thisCrawlFailed) {
+      await sleep(CRAWL_THROTTLE_MS);
     }
 
     const now = new Date().toISOString();

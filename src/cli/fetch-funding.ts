@@ -154,6 +154,56 @@ function isBlockedDomain(url: string): boolean {
   }
 }
 
+// ── Pain hypothesis inference ──────────────────────────────────────────────────
+
+// Ordered by specificity: more specific terms are checked first.
+// Returns the first matching hypothesis, or a safe default.
+const PAIN_KEYWORD_MAP: Array<{ keywords: string[]; hypothesis: string }> = [
+  {
+    keywords: ['zk', 'zero-knowledge', 'zero knowledge', 'zkp', 'zk-snark', 'zk-stark', 'zkevm'],
+    hypothesis: 'proving time latency and state verification',
+  },
+  {
+    keywords: ['layer 2', 'l2', 'rollup', 'optimistic', 'arbitrum', 'optimism', 'sequencer'],
+    hypothesis: 'L2 finality and sequencer reliability',
+  },
+  {
+    keywords: ['bridge', 'cross-chain', 'interoperab', 'multichain', 'omnichain'],
+    hypothesis: 'cross-chain settlement latency',
+  },
+  {
+    keywords: ['stablecoin', 'stablecoins', 'payment rail', 'payments', 'remittance', 'fiat'],
+    hypothesis: 'payment rail settlement finality',
+  },
+  {
+    keywords: ['lend', 'borrow', 'collateral', 'liquidat', 'money market'],
+    hypothesis: 'liquidation execution reliability',
+  },
+  {
+    keywords: ['dex', 'amm', 'swap', 'order book', 'mev', 'orderbook'],
+    hypothesis: 'MEV exposure / order routing',
+  },
+  {
+    keywords: ['nft', 'gaming', 'game', 'metaverse', 'marketplace'],
+    hypothesis: 'on-chain transaction throughput and gas predictability',
+  },
+  {
+    keywords: ['staking', 'validator', 'restaking', 'liquid staking', 'slashing'],
+    hypothesis: 'validator key management and slashing risk',
+  },
+];
+const DEFAULT_FUNDING_PAIN_HYPOTHESIS = 'on-chain execution reliability';
+
+function inferPainHypothesis(tweetText: string): string {
+  const lower = tweetText.toLowerCase();
+  for (const { keywords, hypothesis } of PAIN_KEYWORD_MAP) {
+    if (keywords.some((kw) => lower.includes(kw))) {
+      return hypothesis;
+    }
+  }
+  return DEFAULT_FUNDING_PAIN_HYPOTHESIS;
+}
+
 // ── Stage extraction ───────────────────────────────────────────────────────────
 
 function extractStage(text: string): FundingStage {
@@ -207,6 +257,7 @@ function buildProfile(opts: {
   tweetText: string;
   postedAt: string;
   authorBio?: string;
+  painHypothesis: string;
 }): EnrichedProfile {
   const now = new Date().toISOString();
 
@@ -214,6 +265,7 @@ function buildProfile(opts: {
     id: randomUUID(),
     enrichedAt: now,
     schemaVersion: '1.0.0',
+    painHypothesis: opts.painHypothesis,
     sources: {},
     company: {
       name: opts.companyName,
@@ -435,6 +487,7 @@ async function main(): Promise<void> {
         tweetText: tweet.text,
         postedAt: tweet.postedAt,
         authorBio: tweet.authorBio,
+        painHypothesis: inferPainHypothesis(tweet.text),
       });
     } catch {
       continue;

@@ -39,9 +39,16 @@ EMAIL FRAMEWORK (4 sentences):
 
 REQUIREMENTS:
 - Subject: lowercase, ≤8 words, technically specific. No exclamation marks.
-- Salutation: Hey [first name],
+- Salutation: Use the exact value of "Salutation to use:" from the "## Primary Contact" section. Copy it verbatim — no substitution, no improvisation.
 - Body: exactly 4 sentences.
 - Sign-off: Baron (no company name, no title)
+- NO PLACEHOLDERS — HARD RULE: Never output bracketed template variables such as "[first name]", "[Name]", "[Company]", or any "[…]" pattern anywhere in the subject or body. If a piece of information is absent, write around it — do not insert a placeholder.
+
+LEVERAGE SIGNALS — injected per lead, use when present:
+- Pain Hypothesis: The pre-validated architectural pain for this company. Your Hypothesis sentence (sentence 2) MUST be grounded in this specific hypothesis — elaborate and sharpen it with your research, do NOT replace it with a generic one.
+- TVL Context: If provided (e.g., "$45M TVL in Liquid Staking"), use it in the Hook to quantify the scale at which the pain becomes critical (e.g., "at $45M TVL, settlement latency is no longer a dev problem — it is a P&L problem").
+- Funding VC: If a VC name is provided, use it as a warm framing hook or social proof anchor in the Hook (e.g., "Post-[VC] raise, the next 6 months are when architectural shortcuts compound into hard walls"). Never invent or guess a VC name — only use what is explicitly provided.
+- Primary Contact Handle: If provided (X, LinkedIn, or GitHub), you may reference it in the hook. Never invent a handle.
 
 STRICT HANDLE POLICY — MANDATORY:
 You are STRICTLY FORBIDDEN from inventing, guessing, or hallucinating an X (Twitter) handle based on a company name, domain, or any other heuristic.
@@ -180,6 +187,44 @@ interface AgentRunRow {
 
 function hashArgs(args: object): string {
   return createHash('sha256').update(JSON.stringify(args)).digest('hex').slice(0, 12);
+}
+
+// Returns the first founder's first name and best available handle.
+// All fields are sourced from what Upgrade 2 extracted verbatim — never inferred.
+function resolvePrimaryContact(profile: EnrichedProfile): {
+  firstName: string | null;
+  handle: string | null;
+} {
+  const founder = profile.team.founders[0];
+  if (!founder) return { firstName: null, handle: null };
+  const firstName = founder.name?.trim().split(/\s+/)[0] ?? null;
+  // Prefer X handle for direct social reach; fall back to LinkedIn or GitHub profile URLs.
+  const handle =
+    founder.xHandle ??
+    (founder.linkedinUrl ? `LinkedIn: ${founder.linkedinUrl}` : null) ??
+    (founder.githubUrl  ? `GitHub: ${founder.githubUrl}`   : null) ??
+    null;
+  return { firstName, handle };
+}
+
+// Extracts the lead VC name from the original source tweet text (X-Radar path only).
+// Pattern: "led by Paradigm" / "backed by a16z crypto" — capped at 80 chars.
+// Returns null for DeFiLlama entries (no tweet) or when pattern is absent.
+function extractFundingVC(profile: EnrichedProfile): string | null {
+  const tweetText = profile.rawContent.sourceTweets?.[0]?.text ?? '';
+  if (!tweetText) return null;
+  const match = /(?:led|backed)\s+by\s+([\w\s&.,/]+?)(?=[.!?\n]|$)/i.exec(tweetText);
+  return match ? match[1].trim().slice(0, 80) : null;
+}
+
+// Formats TVL + DeFiLlama category into a single leverage string.
+// Returns null for non-DeFiLlama entries.
+function formatTVLContext(profile: EnrichedProfile): string | null {
+  const rawText = profile.funding.claimed?.rawText ?? '';
+  const tvlMatch = /DefiLlama TVL:\s*(\$[\d.]+[MBk])/i.exec(rawText);
+  if (!tvlMatch) return null;
+  const category = profile.product.selfClaimedCategory;
+  return category ? `${tvlMatch[1]} TVL in ${category}` : `${tvlMatch[1]} TVL`;
 }
 
 function formatUSD(amount: number): string {
@@ -567,6 +612,13 @@ export class AgentExecutionHarness {
   ): string {
     const { company, funding } = profile;
 
+    // ── Leverage signal extraction ─────────────────────────────────────────────
+    const primaryContact   = resolvePrimaryContact(profile);
+    const fundingVC        = extractFundingVC(profile);
+    const tvlContext       = formatTVLContext(profile);
+    const painHypothesis   = profile.painHypothesis; // undefined for pre-Upgrade-1 records
+
+    // ── Funding line ───────────────────────────────────────────────────────────
     const fundingLine = [
       funding.claimed?.amountUSD ? formatUSD(funding.claimed.amountUSD) : 'undisclosed',
       funding.claimed?.stage?.replace(/_/g, '-') ?? '',
@@ -579,6 +631,7 @@ export class AgentExecutionHarness {
       .filter(Boolean)
       .join(' — ');
 
+    // ── Research plan ──────────────────────────────────────────────────────────
     const step1 = company.websiteUrl
       ? `Call crawl_website("${company.websiteUrl}") to discover their tech stack and architecture.`
       : 'No website URL available — skip crawl_website.';
@@ -587,7 +640,7 @@ export class AgentExecutionHarness {
       ? `Call search_x_tweets targeting "${company.xHandle.replace(/^@/, '')}" for recent technical posts.`
       : 'X Handle is (none) — do NOT call search_x_tweets and do NOT invent a handle.';
 
-    // When no verified handle exists, compute the bare domain to give the LLM a concrete anchor.
+    // ── Domain anchor (for handle-less profiles) ───────────────────────────────
     const domainAnchor = (!company.xHandle && company.websiteUrl)
       ? (() => {
           try { return new URL(company.websiteUrl).hostname.replace(/^\./, '').replace(/^www\./, ''); }
@@ -599,6 +652,31 @@ export class AgentExecutionHarness {
       ? `\n\n⚠️  NO X HANDLE: Do NOT invent or guess an X handle. Use the verified domain "${domainAnchor}" as the primary identifier in the subject line and hook.`
       : '';
 
+    // ── Primary contact block ──────────────────────────────────────────────────
+    // When a founder name is present: the LLM gets an exact "Salutation to use:" value.
+    // When absent: we supply an equally exact fallback so the model never has to guess
+    // or reach for a bracketed placeholder.
+    const contactLines: string[] = [];
+    if (primaryContact.firstName) {
+      contactLines.push(`Name: ${primaryContact.firstName}`);
+      if (primaryContact.handle) contactLines.push(`Handle: ${primaryContact.handle}`);
+      contactLines.push(`Salutation to use: Hey ${primaryContact.firstName},`);
+    } else {
+      contactLines.push('No founder name available.');
+      contactLines.push('Salutation to use: Greetings,');
+      contactLines.push('IMPORTANT: Do NOT write any bracketed placeholder (e.g. "[first name]", "[Name]"). Use exactly the salutation above.');
+    }
+    const contactBlock = contactLines.join('\n');
+
+    // ── Leverage signals block — only include fields that are actually present ─
+    const leverageLines: string[] = [];
+    if (painHypothesis) leverageLines.push(`Pain Hypothesis: ${painHypothesis}`);
+    if (tvlContext)     leverageLines.push(`TVL Context: ${tvlContext}`);
+    if (fundingVC)      leverageLines.push(`Funding VC: ${fundingVC}`);
+    const leverageBlock = leverageLines.length > 0
+      ? `\n\n## Leverage Signals\n${leverageLines.join('\n')}`
+      : '';
+
     return `Research and draft for the following company.
 
 ## Target
@@ -607,6 +685,9 @@ X Handle: ${company.xHandle ?? '(none)'}
 Website: ${company.websiteUrl ?? '(none)'}
 Funding: ${fundingLine}${reviewerContext ? `\nReviewer Notes: ${reviewerContext}` : ''}${handleNote}
 
+## Primary Contact
+${contactBlock}
+
 ## Research Plan
 1. ${step1}
 2. ${step2}
@@ -614,7 +695,7 @@ Funding: ${fundingLine}${reviewerContext ? `\nReviewer Notes: ${reviewerContext}
 ## Framing for this Lead
 Source context: ${context.sourceAngle}
 Hypothesis angle: ${context.hypothesis}
-Value Drop angle: ${context.valueDrop}`;
+Value Drop angle: ${context.valueDrop}${leverageBlock}`;
   }
 
   private loadRecord(runId: string): AgentRunRecord {

@@ -22,6 +22,9 @@ export const EnrichedProfileSchema = z.object({
   id: z.string().uuid(),
   enrichedAt: z.string().datetime(),
   schemaVersion: z.literal("1.0.0"),
+  // Stamped at ingestion (Stage 1a/1b). Stage 2 validates or kills it.
+  // Optional so existing DB records without this field remain valid.
+  painHypothesis: z.string().optional(),
   sources: z.object({
     xApi: z.object({
       lastFetched: z.string().datetime(),
@@ -87,6 +90,7 @@ export const EnrichedProfileSchema = z.object({
       role: z.string().optional(),
       xHandle: z.string().optional(),
       linkedinUrl: z.string().url().optional(),
+      githubUrl: z.string().url().optional(),
       bioSnippet: z.string().optional(),
       isFoundingEngineer: z.boolean().optional(),
     })),

@@ -38,6 +38,7 @@ interface EmailDraft {
   companyName: string;
   xHandle: string | null;
   websiteUrl: string | null;
+  founderName: string | null;
   subject: string;
   body: string;
   budgetExhausted: boolean;
@@ -145,8 +146,9 @@ function renderMarkdown(drafts: EmailDraft[], generatedAt: string): string {
     if (!identifier && d.websiteUrl) {
       try { identifier = new URL(d.websiteUrl).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
     }
+    const contactLabel = d.founderName ? ` · attn: ${d.founderName}` : '';
     const lines = [
-      `## ${i + 1}. ${d.companyName} · ${identifier || '(no handle)'}`,
+      `## ${i + 1}. ${d.companyName} · ${identifier || '(no handle)'}${contactLabel}`,
       '',
     ];
     if (d.budgetExhausted) {
@@ -230,8 +232,13 @@ async function main(): Promise<void> {
       valueDrop: framework.valueDrop,
     };
 
+    // Resolve primary contact: prefer extracted founder, fall back to company handle.
+    const primaryFounder = profile.team.founders[0];
+    const founderFirstName = primaryFounder?.name?.trim().split(/\s+/)[0] ?? null;
+
     const companyLabel = `${profile.company.name} (${profile.company.xHandle ?? row.id.slice(0, 8)})`;
-    process.stdout.write(`  → ${companyLabel} [${source}]… `);
+    const contactNote  = founderFirstName ? ` → ${founderFirstName}` : '';
+    process.stdout.write(`  → ${companyLabel}${contactNote} [${source}]… `);
 
     try {
       const record = await harness.run(row.id, context);
@@ -249,6 +256,7 @@ async function main(): Promise<void> {
           companyName: profile.company.name,
           xHandle: profile.company.xHandle ?? null,
           websiteUrl: profile.company.websiteUrl ?? null,
+          founderName: founderFirstName,
           subject: record.draftSubject ?? '(no subject)',
           body: record.draftBody ?? '',
           budgetExhausted: record.status === 'budget_exhausted',
