@@ -267,6 +267,13 @@ async function main(): Promise<void> {
       }
     } catch (err: unknown) {
       console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      // Safety-net: if the harness threw before its own catch block could execute
+      // (e.g. an error between SET agent-running and the harness try block), force
+      // the item back to 'reviewed' so it is not orphaned in 'agent-running'.
+      // The AND guard makes this a no-op when the harness already rolled back.
+      db.prepare<[string], void>(
+        "UPDATE queue_items SET status = 'reviewed' WHERE id = ? AND status = 'agent-running'",
+      ).run(row.id);
       failed++;
     }
   }

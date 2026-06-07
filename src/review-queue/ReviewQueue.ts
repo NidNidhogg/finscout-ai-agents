@@ -70,29 +70,31 @@ export function createReviewQueue({ db }: { db: Database.Database }) {
 
     ReviewAnnotationSchema.parse(annotation);
 
-    const row = db.prepare(`SELECT * FROM queue_items WHERE id = ?`).get(id) as Row | undefined;
-    if (!row) {
-      throw new NotFoundError(id);
-    }
-
-    if (row.status === 'reviewed') {
-      throw new AlreadyReviewedError(id);
-    }
-
-    db.prepare(
-      `UPDATE queue_items SET status = 'reviewed', reviewed_at = ?, annotation_json = ? WHERE id = ?`,
-    ).run(new Date().toISOString(), JSON.stringify(annotation), id);
+    db.transaction(() => {
+      const row = db.prepare(`SELECT * FROM queue_items WHERE id = ?`).get(id) as Row | undefined;
+      if (!row) {
+        throw new NotFoundError(id);
+      }
+      if (row.status === 'reviewed') {
+        throw new AlreadyReviewedError(id);
+      }
+      db.prepare(
+        `UPDATE queue_items SET status = 'reviewed', reviewed_at = ?, annotation_json = ? WHERE id = ?`,
+      ).run(new Date().toISOString(), JSON.stringify(annotation), id);
+    })();
   }
 
   async function drop(id: string): Promise<void> {
-    const row = db.prepare(`SELECT * FROM queue_items WHERE id = ?`).get(id) as Row | undefined;
-    if (!row) {
-      throw new NotFoundError(id);
-    }
-    if (row.status === 'reviewed') {
-      throw new AlreadyReviewedError(id);
-    }
-    db.prepare(`UPDATE queue_items SET status = 'dropped' WHERE id = ?`).run(id);
+    db.transaction(() => {
+      const row = db.prepare(`SELECT * FROM queue_items WHERE id = ?`).get(id) as Row | undefined;
+      if (!row) {
+        throw new NotFoundError(id);
+      }
+      if (row.status === 'reviewed') {
+        throw new AlreadyReviewedError(id);
+      }
+      db.prepare(`UPDATE queue_items SET status = 'dropped' WHERE id = ?`).run(id);
+    })();
   }
 
   async function exportReviewed(): Promise<QueueItem[]> {

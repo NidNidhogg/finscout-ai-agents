@@ -25,6 +25,7 @@ const DEFILLAMA_URL = 'https://api.llama.fi/protocols';
 const MIN_TVL = 10_000_000;
 const MAX_TVL = 100_000_000;
 const INSERT_LIMIT = 5;
+const CONCURRENCY  = 10; // max parallel URL-resolution slots per batch
 
 const TARGET_CATEGORIES = new Set([
   'Bridge',
@@ -179,12 +180,42 @@ async function main(): Promise<void> {
   );
   console.log('  ' + '─'.repeat(82));
 
-  for (const proto of candidates) {
+  // ── Phase 1: parallel URL resolution ────────────────────────────────────────
+  // Candidates are processed in batches of CONCURRENCY. Promise.allSettled means
+  // a timeout or DNS failure in one slot never aborts its siblings.
+  // Early exit: stop firing batches once we have accumulated INSERT_LIMIT new
+  // candidates not already present in the DB — avoids resolving the full 100+
+  // list when only 5 insertion slots remain.
+
+  const resolved: Array<{ proto: DLProtocol; resolvedUrl: string | null }> = [];
+
+  for (let i = 0; i < candidates.length; i += CONCURRENCY) {
+    const batch = candidates.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batch.map((proto) => resolveCanonicalUrl(proto.url!)),
+    );
+
+    for (let j = 0; j < batch.length; j++) {
+      const outcome = settled[j]!;
+      resolved.push({
+        proto: batch[j]!,
+        // A rejected promise (timeout / network error) is treated the same as
+        // a null return value — the URL is considered dead and will be skipped.
+        resolvedUrl: outcome.status === 'fulfilled' ? outcome.value : null,
+      });
+    }
+
+    // Early exit: enough new (non-duplicate) candidates to fill INSERT_LIMIT.
+    const newCount = resolved.filter(
+      (r) => r.resolvedUrl !== null && !existingUrls.has(r.resolvedUrl),
+    ).length;
+    if (newCount >= INSERT_LIMIT) break;
+  }
+
+  // ── Phase 2: dedup + insert pass ────────────────────────────────────────────
+
+  for (const { proto, resolvedUrl } of resolved) {
     if (inserted >= INSERT_LIMIT) break;
-
-    process.stdout.write(`  … ${proto.name.padEnd(22)} resolving URL…\r`);
-
-    const resolvedUrl = await resolveCanonicalUrl(proto.url!);
 
     if (!resolvedUrl) {
       console.log(`  ✗ ${proto.name.padEnd(22)} ${String(proto.url).slice(0, 38).padEnd(38)} dead/unreachable — skipped`);

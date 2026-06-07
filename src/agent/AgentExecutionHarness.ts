@@ -247,6 +247,26 @@ function parseDraft(raw: string): ParsedDraft {
   return { subject, body };
 }
 
+// ── Timeout helper ────────────────────────────────────────────────────────────
+
+const ITERATION_TIMEOUT_MS = 60_000;
+
+/**
+ * Races a Gemini API call against a hard wall-clock deadline.
+ * The timer is cancelled on both resolve and reject paths so no leak occurs
+ * when the call succeeds before the deadline.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Gemini generateContent timed out after ${ms}ms`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 // ── AgentExecutionHarness ──────────────────────────────────────────────────────
 
 export class AgentExecutionHarness {
@@ -325,27 +345,33 @@ export class AgentExecutionHarness {
       ? (JSON.parse(row.annotation_json) as ReviewAnnotationPartial)
       : {};
 
-    this.db
-      .prepare<[string], void>("UPDATE queue_items SET status = 'agent-running' WHERE id = ?")
-      .run(queueItemId);
-
+    // Declared before try so the catch block can reference them when marking
+    // the agent_run record as failed (even if the INSERT never completed).
     const runId = randomUUID();
     const startedAt = new Date().toISOString();
 
-    this.db
-      .prepare<[string, string, string, string], void>(
-        "INSERT INTO agent_runs (id, queue_item_id, status, model, started_at, history_json) VALUES (?, ?, 'running', ?, ?, '[]')",
-      )
-      .run(runId, queueItemId, this.model, startedAt);
-
-    const initialHistory: Content[] = [
-      {
-        role: 'user',
-        parts: [{ text: this.buildInitialPrompt(profile, annotation, context) }],
-      },
-    ];
-
+    // The try block covers SET agent-running and all subsequent setup so that
+    // any failure — including buildInitialPrompt or the DB INSERT — is caught
+    // and the queue item is rolled back to 'reviewed' rather than orphaned in
+    // 'agent-running'.
     try {
+      this.db
+        .prepare<[string], void>("UPDATE queue_items SET status = 'agent-running' WHERE id = ?")
+        .run(queueItemId);
+
+      this.db
+        .prepare<[string, string, string, string], void>(
+          "INSERT INTO agent_runs (id, queue_item_id, status, model, started_at, history_json) VALUES (?, ?, 'running', ?, ?, '[]')",
+        )
+        .run(runId, queueItemId, this.model, startedAt);
+
+      const initialHistory: Content[] = [
+        {
+          role: 'user',
+          parts: [{ text: this.buildInitialPrompt(profile, annotation, context) }],
+        },
+      ];
+
       const draft = await this.executeLoop(runId, initialHistory);
       const completedAt = new Date().toISOString();
 
@@ -364,8 +390,8 @@ export class AgentExecutionHarness {
 
       const finalQueueStatus = draft.body === NO_SIGNALS_SENTINEL ? 'discarded' : 'drafted';
       this.db
-        .prepare<[string], void>(`UPDATE queue_items SET status = '${finalQueueStatus}' WHERE id = ?`)
-        .run(queueItemId);
+        .prepare<[string, string], void>('UPDATE queue_items SET status = ? WHERE id = ?')
+        .run(finalQueueStatus, queueItemId);
 
       return this.loadRecord(runId);
     } catch (err: unknown) {
@@ -419,8 +445,8 @@ export class AgentExecutionHarness {
         .run(completedAt, draft.subject, draft.body, runRow.id);
       const finalQueueStatus = draft.body === NO_SIGNALS_SENTINEL ? 'discarded' : 'drafted';
       this.db
-        .prepare<[string], void>(`UPDATE queue_items SET status = '${finalQueueStatus}' WHERE id = ?`)
-        .run(queueItemId);
+        .prepare<[string, string], void>('UPDATE queue_items SET status = ? WHERE id = ?')
+        .run(finalQueueStatus, queueItemId);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.db
@@ -456,7 +482,10 @@ export class AgentExecutionHarness {
         )
         .run(iterationCount, JSON.stringify(history), runId);
 
-      const result = await geminiModel.generateContent({ contents: history });
+      const result = await withTimeout(
+        geminiModel.generateContent({ contents: history }),
+        ITERATION_TIMEOUT_MS,
+      );
       const response = result.response;
       const candidate = response.candidates?.[0];
       if (!candidate) throw new Error('Gemini returned no candidates');
@@ -525,7 +554,10 @@ export class AgentExecutionHarness {
       )
       .run(JSON.stringify(history), runId);
 
-    const result = await geminiModel.generateContent({ contents: history });
+    const result = await withTimeout(
+      geminiModel.generateContent({ contents: history }),
+      ITERATION_TIMEOUT_MS,
+    );
     const candidate = result.response.candidates?.[0];
     if (candidate) {
       history.push(candidate.content);

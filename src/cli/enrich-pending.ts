@@ -388,11 +388,15 @@ async function main(): Promise<void> {
     if (!hasSubstantiveSignals(finalProfile)) {
       if (thisCrawlFailed) {
         const errorAnnotation = JSON.stringify({ error: `Firecrawl failed — no signals extractable: ${crawlErrorMsg}` });
-        retryStmt.run(JSON.stringify(finalProfile), now, errorAnnotation, row.id);
+        db.transaction(() => {
+          retryStmt.run(JSON.stringify(finalProfile), now, errorAnnotation, row.id);
+        })();
         console.log(`    ⏳ crawl failed + no signals → needs_retry`);
         retried++;
       } else {
-        discardStmt.run(JSON.stringify(finalProfile), now, row.id);
+        db.transaction(() => {
+          discardStmt.run(JSON.stringify(finalProfile), now, row.id);
+        })();
         console.log(`    ⚡ no technical signals → discarded`);
         discarded++;
       }
@@ -402,14 +406,18 @@ async function main(): Promise<void> {
     // ICP scoring hard stop: discard Tier C before reaching outreach queue
     const scored = scoreProfile(finalProfile);
     if (scored.tier === 'C') {
-      discardStmt.run(JSON.stringify(finalProfile), now, row.id);
+      db.transaction(() => {
+        discardStmt.run(JSON.stringify(finalProfile), now, row.id);
+      })();
       console.log(`    ⚡ Tier C → discarded (${scored.reason})`);
       discarded++;
       continue;
     }
 
     const annotation = buildAutoAnnotation(row.id, finalProfile, crawled, thisCrawlFailed, scored.tier, scored.reason);
-    reviewStmt.run(JSON.stringify(finalProfile), now, JSON.stringify(annotation), row.id);
+    db.transaction(() => {
+      reviewStmt.run(JSON.stringify(finalProfile), now, JSON.stringify(annotation), row.id);
+    })();
     reviewed++;
   }
 
