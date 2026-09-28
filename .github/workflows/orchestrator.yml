@@ -120,8 +120,9 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            // `glob` is already injected by actions/github-script — do not re-require it.
-            const reports = glob.sync('.claude/heal-failures/*.md');
+            // `glob` is already injected by actions/github-script (@actions/glob API).
+            const globber = await glob.create('.claude/heal-failures/*.md');
+            const reports = await globber.glob();
             if (reports.length === 0) return;
             
             const body = reports.map(f => fs.readFileSync(f, 'utf8')).join('\n---\n');
