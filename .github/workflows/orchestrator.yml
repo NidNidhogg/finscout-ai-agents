@@ -62,12 +62,13 @@ jobs:
       #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       # TypeScript:
-      # - name: Set up Node.js
-      #   uses: actions/setup-node@v4
-      #   with:
-      #     node-version: '22'
-      # - name: Install dependencies
-      #   run: pnpm install --frozen-lockfile
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
 
       # Solidity:
       # - name: Set up Foundry
@@ -119,7 +120,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const glob = require('glob');
+            // `glob` is already injected by actions/github-script — do not re-require it.
             const reports = glob.sync('.claude/heal-failures/*.md');
             if (reports.length === 0) return;
             
