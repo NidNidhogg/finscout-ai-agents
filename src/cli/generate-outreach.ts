@@ -24,7 +24,7 @@ import { lintDraft } from '../services/draft-linter';
 
 const DB_PATH = process.env['REVIEW_DB_PATH'] ?? 'data/review-queue.db';
 const EXPORTS_DIR = 'data/exports';
-const MODEL = 'gemini-2.0-flash';
+const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-3.8-flash';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

@@ -8,7 +8,8 @@ export interface ModelPricing {
 }
 
 const MODEL_PRICING: Record<string, ModelPricing> = {
-  'gemini-2.0-flash': { inputPer1M: 0.1, outputPer1M: 0.4 },
+  'gemini-3.8-flash': { inputPer1M: 0.1, outputPer1M: 0.4 },
+  'gemini-2.0-flash': { inputPer1M: 0.1, outputPer1M: 0.4 }, // deprecated upstream
 };
 
 const FALLBACK: ModelPricing = { inputPer1M: 0.1, outputPer1M: 0.4 };
