@@ -15,7 +15,7 @@
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { FirecrawlFetcher } from '../enrichment/website/FirecrawlFetcher';
 import { createWebsiteEnricher, WebsiteEnrichmentError } from '../enrichment/EnrichmentEngine';
 import { EnrichedProfileSchema, ReviewAnnotationSchema } from '../schema/enrichedProfile';
@@ -27,7 +27,7 @@ import type { IcpTier } from '../sales-factory/scoreProfile';
 
 const DB_PATH = process.env['REVIEW_DB_PATH'] ?? 'data/review-queue.db';
 const SYSTEM_REVIEWER = 'system:enrich-pending';
-const FOUNDER_MODEL = 'gemini-2.0-flash';
+const FOUNDER_MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-2.5-flash';
 // Same cap as AgentExecutionHarness — keeps Gemini token cost predictable.
 const FOUNDER_MARKDOWN_CAP = 8_000;
 
@@ -103,35 +103,37 @@ async function extractFounders(
 ): Promise<FounderSignal[]> {
   if (!markdown) return [];
 
-  const genAI = new GoogleGenerativeAI(geminiApiKey);
-  const model = genAI.getGenerativeModel({
-    model: FOUNDER_MODEL,
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: SchemaType.OBJECT,
-        properties: {
-          founders: {
-            type: SchemaType.ARRAY,
-            items: {
-              type: SchemaType.OBJECT,
-              properties: {
-                name:               { type: SchemaType.STRING },
-                role:               { type: SchemaType.STRING },
-                xHandle:            { type: SchemaType.STRING },
-                linkedinUrl:        { type: SchemaType.STRING },
-                githubUrl:          { type: SchemaType.STRING },
-                bioSnippet:         { type: SchemaType.STRING },
-                isFoundingEngineer: { type: SchemaType.BOOLEAN },
+  const ai = new GoogleGenAI({ apiKey: geminiApiKey });
+  const generate = (prompt: string) =>
+    ai.models.generateContent({
+      model: FOUNDER_MODEL,
+      contents: prompt,
+      config: {
+        temperature: 0,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            founders: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name:               { type: Type.STRING },
+                  role:               { type: Type.STRING },
+                  xHandle:            { type: Type.STRING },
+                  linkedinUrl:        { type: Type.STRING },
+                  githubUrl:          { type: Type.STRING },
+                  bioSnippet:         { type: Type.STRING },
+                  isFoundingEngineer: { type: Type.BOOLEAN },
+                },
               },
             },
           },
+          required: ['founders'],
         },
-        required: ['founders'],
       },
-    },
-  });
+    });
 
   const prompt = `Extract founder and C-suite leadership signals from the website markdown below.
 
@@ -148,8 +150,8 @@ INVARIANT RULES — violation corrupts the sales pipeline:
 MARKDOWN:
 ${markdown}`;
 
-  const result = await model.generateContent(prompt);
-  const raw = JSON.parse(result.response.text()) as { founders?: unknown[] };
+  const result = await generate(prompt);
+  const raw = JSON.parse(result.text ?? '{}') as { founders?: unknown[] };
 
   if (!Array.isArray(raw.founders)) return [];
 

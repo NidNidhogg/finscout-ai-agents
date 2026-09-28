@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'crypto';
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
-import type { Content, FunctionCall, FunctionDeclarationsTool, GenerativeModel } from '@google/generative-ai';
+import { GoogleGenAI, Type } from '@google/genai';
+import type { Content, FunctionCall, Tool } from '@google/genai';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { FirecrawlFetcher } from '../enrichment/website/FirecrawlFetcher';
@@ -69,17 +69,17 @@ NO_SIGNALS_FOUND`;
 
 // ── Gemini tool declarations ───────────────────────────────────────────────────
 
-const HARNESS_TOOLS: FunctionDeclarationsTool = {
+const HARNESS_TOOLS: Tool = {
   functionDeclarations: [
     {
       name: 'crawl_website',
       description:
         'Scrape a URL and return the page content as markdown. Use to discover tech stack, architecture patterns, and product signals.',
       parameters: {
-        type: SchemaType.OBJECT,
+        type: Type.OBJECT,
         properties: {
           url: {
-            type: SchemaType.STRING,
+            type: Type.STRING,
             description: 'Absolute HTTP/S URL to scrape.',
           },
         },
@@ -91,14 +91,14 @@ const HARNESS_TOOLS: FunctionDeclarationsTool = {
       description:
         'Search recent X (Twitter) posts. Use to find technical announcements from the target company handle.',
       parameters: {
-        type: SchemaType.OBJECT,
+        type: Type.OBJECT,
         properties: {
           query: {
-            type: SchemaType.STRING,
+            type: Type.STRING,
             description: 'X search query string.',
           },
           maxResults: {
-            type: SchemaType.INTEGER,
+            type: Type.INTEGER,
             description: 'Number of tweets to return. Between 5 and 10. Defaults to 10.',
           },
         },
@@ -197,7 +197,7 @@ interface UsageTotals {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-function hashArgs(args: object): string {
+function hashArgs(args: object | undefined): string {
   return createHash('sha256').update(JSON.stringify(args)).digest('hex').slice(0, 12);
 }
 
@@ -283,7 +283,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 export class AgentExecutionHarness {
   private readonly db: Database.Database;
-  private readonly genAI: GoogleGenerativeAI;
+  private readonly ai: GoogleGenAI;
   private readonly firecrawl: FirecrawlFetcher;
   private readonly xClient: ConcreteXApiClient;
   private readonly model: string;
@@ -292,7 +292,7 @@ export class AgentExecutionHarness {
 
   constructor(config: AgentHarnessConfig) {
     this.db = config.db;
-    this.genAI = new GoogleGenerativeAI(config.geminiApiKey);
+    this.ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
     this.firecrawl = new FirecrawlFetcher({ apiKey: config.firecrawlApiKey });
     this.xClient = new ConcreteXApiClient({ bearerToken: config.xBearerToken });
     this.model = config.model ?? DEFAULT_MODEL;
@@ -499,11 +499,18 @@ export class AgentExecutionHarness {
     history: Content[],
     usage: UsageTotals,
   ): Promise<ParsedDraft> {
-    const geminiModel = this.genAI.getGenerativeModel({
-      model: this.model,
-      systemInstruction: SYSTEM_INSTRUCTION,
-      tools: [HARNESS_TOOLS],
-    });
+    const generate = (): Promise<import('@google/genai').GenerateContentResponse> =>
+      withTimeout(
+        this.ai.models.generateContent({
+          model: this.model,
+          contents: history,
+          config: {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            tools: [HARNESS_TOOLS],
+          },
+        }),
+        ITERATION_TIMEOUT_MS,
+      );
 
     const argCountMap = new Map<string, number>();
     const nameCountMap = new Map<string, number>();
@@ -518,29 +525,25 @@ export class AgentExecutionHarness {
         )
         .run(iterationCount, JSON.stringify(history), runId);
 
-      const result = await withTimeout(
-        geminiModel.generateContent({ contents: history }),
-        ITERATION_TIMEOUT_MS,
-      );
-      const response = result.response;
+      const response = await generate();
       usage.inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
       usage.outputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;
       const candidate = response.candidates?.[0];
-      if (!candidate) throw new Error('Gemini returned no candidates');
+      if (!candidate?.content) throw new Error('Gemini returned no candidates');
 
       history.push(candidate.content);
 
-      const functionCalls = response.functionCalls();
+      const functionCalls = response.functionCalls;
 
       if (!functionCalls || functionCalls.length === 0) {
         this.db
           .prepare<[string, string], void>('UPDATE agent_runs SET history_json = ? WHERE id = ?')
           .run(JSON.stringify(history), runId);
-        return parseDraft(response.text());
+        return parseDraft(response.text ?? '');
       }
 
       if (this.exceedsRepeatLimits(functionCalls, argCountMap, nameCountMap)) {
-        return this.finalizeBudgetExhausted(runId, geminiModel, history, 'repeat_limit', usage);
+        return this.finalizeBudgetExhausted(runId, history, 'repeat_limit', usage);
       }
 
       const toolResults = await Promise.allSettled(
@@ -549,7 +552,7 @@ export class AgentExecutionHarness {
 
       const functionResponseParts = toolResults.map((settled, i) => ({
         functionResponse: {
-          name: functionCalls[i]!.name,
+          name: functionCalls[i]!.name ?? '',
           response:
             settled.status === 'fulfilled'
               ? settled.value
@@ -562,7 +565,7 @@ export class AgentExecutionHarness {
         },
       }));
 
-      history.push({ role: 'function', parts: functionResponseParts });
+      history.push({ role: 'user', parts: functionResponseParts });
 
       // Persist after tool results — must happen before next generateContent call
       this.db
@@ -570,12 +573,11 @@ export class AgentExecutionHarness {
         .run(JSON.stringify(history), runId);
     }
 
-    return this.finalizeBudgetExhausted(runId, geminiModel, history, 'iteration_limit', usage);
+    return this.finalizeBudgetExhausted(runId, history, 'iteration_limit', usage);
   }
 
   private async finalizeBudgetExhausted(
     runId: string,
-    geminiModel: GenerativeModel,
     history: Content[],
     reason: 'iteration_limit' | 'repeat_limit',
     usage: UsageTotals,
@@ -593,21 +595,28 @@ export class AgentExecutionHarness {
       )
       .run(JSON.stringify(history), runId);
 
-    const result = await withTimeout(
-      geminiModel.generateContent({ contents: history }),
+    const response = await withTimeout(
+      this.ai.models.generateContent({
+        model: this.model,
+        contents: history,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION,
+          tools: [HARNESS_TOOLS],
+        },
+      }),
       ITERATION_TIMEOUT_MS,
     );
-    usage.inputTokens += result.response.usageMetadata?.promptTokenCount ?? 0;
-    usage.outputTokens += result.response.usageMetadata?.candidatesTokenCount ?? 0;
-    const candidate = result.response.candidates?.[0];
-    if (candidate) {
+    usage.inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
+    usage.outputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;
+    const candidate = response.candidates?.[0];
+    if (candidate?.content) {
       history.push(candidate.content);
       this.db
         .prepare<[string, string], void>('UPDATE agent_runs SET history_json = ? WHERE id = ?')
         .run(JSON.stringify(history), runId);
     }
 
-    return parseDraft(result.response.text());
+    return parseDraft(response.text ?? '');
   }
 
   private exceedsRepeatLimits(
@@ -616,12 +625,13 @@ export class AgentExecutionHarness {
     nameCountMap: Map<string, number>,
   ): boolean {
     for (const call of calls) {
-      const key = `${call.name}:${hashArgs(call.args)}`;
+      const callName = call.name ?? '';
+      const key = `${callName}:${hashArgs(call.args)}`;
       const argCount = (argCountMap.get(key) ?? 0) + 1;
       argCountMap.set(key, argCount);
 
-      const nameCount = (nameCountMap.get(call.name) ?? 0) + 1;
-      nameCountMap.set(call.name, nameCount);
+      const nameCount = (nameCountMap.get(callName) ?? 0) + 1;
+      nameCountMap.set(callName, nameCount);
 
       if (argCount > this.maxToolRepeats || nameCount > NAME_ONLY_BACKSTOP) {
         return true;
@@ -643,9 +653,10 @@ export class AgentExecutionHarness {
       );
   }
 
-  private async dispatchTool(call: FunctionCall): Promise<object> {
+  private async dispatchTool(call: FunctionCall): Promise<Record<string, unknown>> {
+    const callArgs = call.args ?? {};
     if (call.name === 'crawl_website') {
-      const input = CrawlWebsiteInputSchema.parse(call.args);
+      const input = CrawlWebsiteInputSchema.parse(callArgs);
       try {
         const page = await this.firecrawl.fetch(input.url);
         const originalLen = page.markdown.length;
@@ -669,7 +680,7 @@ export class AgentExecutionHarness {
     }
 
     if (call.name === 'search_x_tweets') {
-      const input = SearchXTweetsInputSchema.parse(call.args);
+      const input = SearchXTweetsInputSchema.parse(callArgs);
       try {
         const tweets = await this.xClient.searchRecentTweets({
           query: input.query,
