@@ -58,6 +58,8 @@ interface DraftedRow {
   annotation_json: string | null;
   draft_subject:   string | null;
   draft_body:      string | null;
+  draft_score:     number | null;
+  draft_violations_json: string | null;
 }
 
 interface DraftedItem {
@@ -67,6 +69,8 @@ interface DraftedItem {
   tierReason:   string | null;
   draftSubject: string;
   draftBody:    string;
+  lintScore:    number | null;
+  lintViolations: { rule: string; severity: string; detail: string }[];
 }
 
 // ── Display ────────────────────────────────────────────────────────────────────
@@ -117,6 +121,13 @@ function displayItem(item: DraftedItem, index: number, total: number): void {
     );
   }
   console.log(HRULE);
+  if (item.lintScore !== null && item.lintViolations.length > 0) {
+    const badge = item.lintScore < 0.7 ? A.red : A.yellow;
+    console.log(
+      `  ⚠️   ${badge}LINT ${item.lintScore.toFixed(2)}${A.reset}  ` +
+      item.lintViolations.map((v) => `${A.dim}${v.rule}${A.reset}`).join(' · '),
+    );
+  }
   console.log(`  ✉️   ${A.bold}SUBJECT:${A.reset} ${A.cyan}${draftSubject}${A.reset}`);
   console.log(HRULE);
   draftBody.split('\n').forEach((line) => {
@@ -200,7 +211,9 @@ async function main(): Promise<void> {
              qi.profile_json,
              qi.annotation_json,
              ar.draft_subject,
-             ar.draft_body
+             ar.draft_body,
+             qi.draft_score,
+             qi.draft_violations_json
         FROM queue_items qi
         LEFT JOIN agent_runs ar
                ON ar.id = (
@@ -216,6 +229,8 @@ async function main(): Promise<void> {
            WHEN 'C' THEN 2
            ELSE 3
          END ASC,
+         (qi.draft_score IS NULL OR qi.draft_score >= 0.7) ASC,
+         qi.draft_score ASC,
          (ar.draft_subject IS NOT NULL) DESC,
          qi.enqueued_at DESC
     `)
@@ -244,6 +259,10 @@ async function main(): Promise<void> {
         tierReason,
         draftSubject: row.draft_subject ?? '(no draft — re-run generate-outreach)',
         draftBody:    row.draft_body    ?? '(no draft body — re-run generate-outreach to produce outreach copy for this lead)',
+        lintScore:    row.draft_score,
+        lintViolations: row.draft_violations_json
+          ? (JSON.parse(row.draft_violations_json) as { rule: string; severity: string; detail: string }[])
+          : [],
       };
     });
 

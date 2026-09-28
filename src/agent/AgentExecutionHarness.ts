@@ -7,6 +7,7 @@ import { FirecrawlFetcher } from '../enrichment/website/FirecrawlFetcher';
 import { ConcreteXApiClient } from '../enrichment/x-signal/ConcreteXApiClient';
 import { EnrichedProfileSchema } from '../schema/enrichedProfile';
 import type { EnrichedProfile } from '../schema/enrichedProfile';
+import { estimateCostUsd } from '../config/model-pricing';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -133,6 +134,9 @@ export interface AgentRunRecord {
   draftSubject: string | null;
   draftBody: string | null;
   errorMessage: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
 }
 
 export interface RunContext {
@@ -181,6 +185,14 @@ interface AgentRunRow {
   draft_subject: string | null;
   draft_body: string | null;
   error_message: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+}
+
+interface UsageTotals {
+  inputTokens: number;
+  outputTokens: number;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -326,9 +338,25 @@ export class AgentExecutionHarness {
         draft_subject   TEXT,
         draft_body      TEXT,
         error_message   TEXT,
+        input_tokens    INTEGER NOT NULL DEFAULT 0,
+        output_tokens   INTEGER NOT NULL DEFAULT 0,
+        cost_usd        REAL NOT NULL DEFAULT 0,
         FOREIGN KEY (queue_item_id) REFERENCES queue_items(id)
       )
     `);
+
+    const cols = this.db
+      .prepare<[], { name: string }>('PRAGMA table_info(agent_runs)')
+      .all()
+      .map((c) => c.name);
+    const colMigrations: Record<string, string> = {
+      input_tokens: 'ALTER TABLE agent_runs ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0',
+      output_tokens: 'ALTER TABLE agent_runs ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0',
+      cost_usd: 'ALTER TABLE agent_runs ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0',
+    };
+    for (const [col, ddl] of Object.entries(colMigrations)) {
+      if (!cols.includes(col)) this.db.exec(ddl);
+    }
   }
 
   async run(queueItemId: string, context: RunContext): Promise<AgentRunRecord> {
@@ -372,7 +400,9 @@ export class AgentExecutionHarness {
         },
       ];
 
-      const draft = await this.executeLoop(runId, initialHistory);
+      const usage: UsageTotals = { inputTokens: 0, outputTokens: 0 };
+      const draft = await this.executeLoop(runId, initialHistory, usage);
+      this.persistUsage(runId, usage);
       const completedAt = new Date().toISOString();
 
       // Preserve 'budget_exhausted' status set by finalizeBudgetExhausted — don't overwrite with 'completed'
@@ -436,7 +466,9 @@ export class AgentExecutionHarness {
     }
 
     try {
-      const draft = await this.executeLoop(runRow.id, history);
+      const usage: UsageTotals = { inputTokens: 0, outputTokens: 0 };
+      const draft = await this.executeLoop(runRow.id, history, usage);
+      this.persistUsage(runRow.id, usage);
       const completedAt = new Date().toISOString();
       this.db
         .prepare<[string, string | null, string, string], void>(
@@ -462,7 +494,11 @@ export class AgentExecutionHarness {
     return this.loadRecord(runRow.id);
   }
 
-  private async executeLoop(runId: string, history: Content[]): Promise<ParsedDraft> {
+  private async executeLoop(
+    runId: string,
+    history: Content[],
+    usage: UsageTotals,
+  ): Promise<ParsedDraft> {
     const geminiModel = this.genAI.getGenerativeModel({
       model: this.model,
       systemInstruction: SYSTEM_INSTRUCTION,
@@ -487,6 +523,8 @@ export class AgentExecutionHarness {
         ITERATION_TIMEOUT_MS,
       );
       const response = result.response;
+      usage.inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
+      usage.outputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;
       const candidate = response.candidates?.[0];
       if (!candidate) throw new Error('Gemini returned no candidates');
 
@@ -502,7 +540,7 @@ export class AgentExecutionHarness {
       }
 
       if (this.exceedsRepeatLimits(functionCalls, argCountMap, nameCountMap)) {
-        return this.finalizeBudgetExhausted(runId, geminiModel, history, 'repeat_limit');
+        return this.finalizeBudgetExhausted(runId, geminiModel, history, 'repeat_limit', usage);
       }
 
       const toolResults = await Promise.allSettled(
@@ -532,7 +570,7 @@ export class AgentExecutionHarness {
         .run(JSON.stringify(history), runId);
     }
 
-    return this.finalizeBudgetExhausted(runId, geminiModel, history, 'iteration_limit');
+    return this.finalizeBudgetExhausted(runId, geminiModel, history, 'iteration_limit', usage);
   }
 
   private async finalizeBudgetExhausted(
@@ -540,6 +578,7 @@ export class AgentExecutionHarness {
     geminiModel: GenerativeModel,
     history: Content[],
     reason: 'iteration_limit' | 'repeat_limit',
+    usage: UsageTotals,
   ): Promise<ParsedDraft> {
     const budgetMessage =
       reason === 'repeat_limit'
@@ -558,6 +597,8 @@ export class AgentExecutionHarness {
       geminiModel.generateContent({ contents: history }),
       ITERATION_TIMEOUT_MS,
     );
+    usage.inputTokens += result.response.usageMetadata?.promptTokenCount ?? 0;
+    usage.outputTokens += result.response.usageMetadata?.candidatesTokenCount ?? 0;
     const candidate = result.response.candidates?.[0];
     if (candidate) {
       history.push(candidate.content);
@@ -587,6 +628,19 @@ export class AgentExecutionHarness {
       }
     }
     return false;
+  }
+
+  private persistUsage(runId: string, usage: UsageTotals): void {
+    this.db
+      .prepare<[number, number, number, string], void>(
+        'UPDATE agent_runs SET input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?',
+      )
+      .run(
+        usage.inputTokens,
+        usage.outputTokens,
+        estimateCostUsd(this.model, usage.inputTokens, usage.outputTokens),
+        runId,
+      );
   }
 
   private async dispatchTool(call: FunctionCall): Promise<object> {
@@ -748,6 +802,9 @@ Value Drop angle: ${context.valueDrop}${leverageBlock}`;
       draftSubject: row.draft_subject,
       draftBody: row.draft_body,
       errorMessage: row.error_message,
+      inputTokens: row.input_tokens ?? 0,
+      outputTokens: row.output_tokens ?? 0,
+      costUsd: row.cost_usd ?? 0,
     };
   }
 }
