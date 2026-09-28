@@ -1,0 +1,89 @@
+{
+  "id": "c3333333-3333-4333-8333-333333333333",
+  "enrichedAt": "2026-09-22T07:15:00.000Z",
+  "schemaVersion": "1.0.0",
+  "sources": {
+    "websiteCrawl": {
+      "lastFetched": "2026-09-22T07:10:00.000Z",
+      "pagesCrawled": ["https://keymark.systems", "https://keymark.systems/security"],
+      "fetcher": "firecrawl"
+    }
+  },
+  "company": {
+    "name": "KeyMark",
+    "normalizedName": "keymark",
+    "websiteUrl": "https://keymark.systems",
+    "xHandle": "@keymarksys",
+    "country": "Switzerland"
+  },
+  "funding": {
+    "claimed": {
+      "rawText": "Funding Radar: KeyMark closed $9M Series A led by Haun Ventures for institutional key management.",
+      "amountUSD": 9000000,
+      "stage": "series_a"
+    },
+    "confirmed": {
+      "amountUSD": 9000000,
+      "stage": "series_a",
+      "closedAt": "2026-09-10T00:00:00.000Z",
+      "investors": ["Haun Ventures"],
+      "foundInCrunchbase": true
+    }
+  },
+  "product": {
+    "description": "Institutional key-management and signing infrastructure for treasury operations.",
+    "selfClaimedCategory": "Custody infrastructure",
+    "stackMentions": ["Go", "HSM", "Kubernetes"],
+    "architectureTerms": ["HSM attestation", "multi-party signing", "policy engine"],
+    "antiSignalTerms": [],
+    "competencyCellMatches": [
+      {
+        "cell": "Security",
+        "matchedSignals": ["key management", "signing policies"],
+        "matchedCoreSignals": ["HSM", "custody"],
+        "score": 0.88
+      }
+    ],
+    "evidence": [
+      {
+        "page": "https://keymark.systems/security",
+        "snippet": "Signing requests pass through our policy engine; HSM attestation is optional in the managed tier.",
+        "relevance": "high",
+        "relatedCells": ["Security"]
+      }
+    ]
+  },
+  "team": {
+    "estimatedHeadcount": 22,
+    "headcountSource": "about_page",
+    "founders": [
+      {
+        "name": "Ana Kovac",
+        "role": "CTO",
+        "xHandle": "@akovac_km",
+        "bioSnippet": "built key infra at a custody bank"
+      }
+    ],
+    "openRoles": [
+      {
+        "title": "Backend Engineer — Signing Core",
+        "stackHints": ["Go", "HSM"],
+        "seniority": "senior"
+      }
+    ]
+  },
+  "rawContent": {
+    "websiteMarkdown": {
+      "https://keymark.systems": "# KeyMark\nInstitutional key management for digital asset treasury. Multi-party signing with a programmable policy engine.",
+      "https://keymark.systems/security": "# Security model\nHSM attestation optional in managed tier. Policy engine evaluates signing requests against quorum rules."
+    },
+    "sourceTweets": [
+      {
+        "id": "1830000000000000003",
+        "text": "Series A closed. The mandate: harden the signing core without making ops teams hate us. Policy engine v2 design starts Monday.",
+        "postedAt": "2026-09-11T16:05:00.000Z",
+        "authorHandle": "akovac_km"
+      }
+    ]
+  }
+}

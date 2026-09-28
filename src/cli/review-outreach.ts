@@ -9,7 +9,14 @@
  *
  * Usage:
  *   npx ts-node src/cli/review-outreach.ts
+ *   npx ts-node src/cli/review-outreach.ts --approve-clean
  *   EDITOR=vim npx ts-node src/cli/review-outreach.ts
+ *
+ * --approve-clean: non-interactive bulk mode. Approves & sends every drafted
+ * item whose draft_score >= AUTO_APPROVE_MIN (default 1.0 = zero violations),
+ * stamping queue_items.auto_approved = 1. Drafts below threshold stay queued
+ * for interactive review. Deliberately NOT wired into npm run scout — send
+ * stays a human-triggered decision until lint metrics justify auto-send.
  */
 
 import 'dotenv/config';
@@ -27,6 +34,18 @@ import type { EmailDraft } from '../services/mail-sender';
 // ── Config ─────────────────────────────────────────────────────────────────────
 
 const DB_PATH = process.env['REVIEW_DB_PATH'] ?? 'data/review-queue.db';
+// Drafts scoring at or above this lint threshold can be bulk-approved via
+// --approve-clean. Default 1.0 = zero violations only.
+const AUTO_APPROVE_MIN = Number(process.env['AUTO_APPROVE_MIN'] ?? '1.0');
+const APPROVE_CLEAN = process.argv.includes('--approve-clean');
+
+function ensureAutoApproveColumn(db: Database.Database): void {
+  const cols = (db.prepare('PRAGMA table_info(queue_items)').all() as { name: string }[])
+    .map((c) => c.name);
+  if (!cols.includes('auto_approved')) {
+    db.exec('ALTER TABLE queue_items ADD COLUMN auto_approved INTEGER NOT NULL DEFAULT 0');
+  }
+}
 
 // ── ANSI ───────────────────────────────────────────────────────────────────────
 
@@ -201,6 +220,7 @@ async function main(): Promise<void> {
   }
 
   const sender = new MockMailSender();
+  ensureAutoApproveColumn(db);
 
   // Fetch all drafted items, joining their latest agent_run for the draft text.
   // Sort: Tier A → B → C → untiered, then freshest first within each tier.
@@ -283,6 +303,40 @@ async function main(): Promise<void> {
     `${A.white}C: ${tierCounts.C}${A.reset}` +
     (tierCounts.other > 0 ? `  untiered: ${tierCounts.other}` : ''),
   );
+
+  // ── Bulk auto-approve mode: --approve-clean ─────────────────────────────────
+  // Approves & sends every draft at or above AUTO_APPROVE_MIN without prompts.
+  // Stamps auto_approved=1 so bulk-approved sends are auditable vs manual ones.
+  if (APPROVE_CLEAN) {
+    const clean = items.filter((i) => i.lintScore !== null && i.lintScore >= AUTO_APPROVE_MIN);
+    const skippedItems = items.length - clean.length;
+    console.log(
+      `\n[approve-clean] ${clean.length}/${items.length} drafts at score ≥ ${AUTO_APPROVE_MIN}` +
+      (skippedItems > 0 ? ` · ${skippedItems} below threshold skipped` : ''),
+    );
+    let autoSent = 0;
+    for (const item of clean) {
+      const draft: EmailDraft = {
+        profileId:       item.id,
+        companyName:     item.profile.company.name,
+        xHandle:         item.profile.company.xHandle ?? null,
+        subject:         item.draftSubject,
+        body:            item.draftBody,
+        budgetExhausted: false,
+      };
+      const success = await sender.send(draft, item.profile);
+      if (success) {
+        db.prepare(
+          `UPDATE queue_items SET status = 'sent', auto_approved = 1
+             WHERE id = ? AND status = 'drafted'`,
+        ).run(item.id);
+        console.log(`  ${A.green}✓${A.reset} ${item.profile.company.name} → auto-approved & sent (lint ${item.lintScore!.toFixed(2)})`);
+        autoSent++;
+      }
+    }
+    console.log(`[approve-clean] ${autoSent} sent.`);
+    return;
+  }
 
   let sent = 0;
   let discarded = 0;

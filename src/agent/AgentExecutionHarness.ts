@@ -5,6 +5,8 @@ import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { FirecrawlFetcher } from '../enrichment/website/FirecrawlFetcher';
 import { ConcreteXApiClient } from '../enrichment/x-signal/ConcreteXApiClient';
+import type { PageFetcher } from '../enrichment/EnrichmentEngine';
+import type { XApiClient } from '../enrichment/x-signal/XSignalSource';
 import { EnrichedProfileSchema } from '../schema/enrichedProfile';
 import type { EnrichedProfile } from '../schema/enrichedProfile';
 import { estimateCostUsd } from '../config/model-pricing';
@@ -153,6 +155,9 @@ export interface AgentHarnessConfig {
   model?: string;
   maxIterations?: number;
   maxToolRepeats?: number;
+  /** Tool overrides for evals/tests — real fetchers are used when omitted. */
+  pageFetcher?: PageFetcher;
+  xApiClient?: XApiClient;
 }
 
 // ── Internal types ─────────────────────────────────────────────────────────────
@@ -284,8 +289,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 export class AgentExecutionHarness {
   private readonly db: Database.Database;
   private readonly ai: GoogleGenAI;
-  private readonly firecrawl: FirecrawlFetcher;
-  private readonly xClient: ConcreteXApiClient;
+  private readonly firecrawl: PageFetcher;
+  private readonly xClient: XApiClient;
   private readonly model: string;
   private readonly maxIterations: number;
   private readonly maxToolRepeats: number;
@@ -293,8 +298,8 @@ export class AgentExecutionHarness {
   constructor(config: AgentHarnessConfig) {
     this.db = config.db;
     this.ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
-    this.firecrawl = new FirecrawlFetcher({ apiKey: config.firecrawlApiKey });
-    this.xClient = new ConcreteXApiClient({ bearerToken: config.xBearerToken });
+    this.firecrawl = config.pageFetcher ?? new FirecrawlFetcher({ apiKey: config.firecrawlApiKey });
+    this.xClient = config.xApiClient ?? new ConcreteXApiClient({ bearerToken: config.xBearerToken });
     this.model = config.model ?? DEFAULT_MODEL;
     this.maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     this.maxToolRepeats = config.maxToolRepeats ?? DEFAULT_MAX_TOOL_REPEATS;

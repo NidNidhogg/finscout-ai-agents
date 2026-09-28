@@ -1,0 +1,64 @@
+{
+  "id": "b2222222-2222-4222-8222-222222222222",
+  "enrichedAt": "2026-09-21T08:30:00.000Z",
+  "schemaVersion": "1.0.0",
+  "sources": {
+    "websiteCrawl": {
+      "lastFetched": "2026-09-21T08:25:00.000Z",
+      "pagesCrawled": ["https://settlegrid.xyz"],
+      "fetcher": "firecrawl"
+    }
+  },
+  "company": {
+    "name": "SettleGrid",
+    "normalizedName": "settlegrid",
+    "websiteUrl": "https://settlegrid.xyz",
+    "country": "Germany"
+  },
+  "funding": {
+    "claimed": {
+      "rawText": "X-Radar: SettleGrid announces $4.5M pre-seed to build intent-based settlement rails.",
+      "amountUSD": 4500000,
+      "stage": "pre_seed"
+    },
+    "confirmed": {
+      "foundInCrunchbase": false
+    }
+  },
+  "product": {
+    "description": "Intent-based settlement rails for cross-chain trading venues.",
+    "stackMentions": ["Rust", "TypeScript"],
+    "architectureTerms": ["intent relay", "settlement finality"],
+    "antiSignalTerms": [],
+    "competencyCellMatches": [
+      {
+        "cell": "Infrastructure",
+        "matchedSignals": ["settlement rails"],
+        "matchedCoreSignals": ["cross-chain relay"],
+        "score": 0.72
+      }
+    ],
+    "evidence": [
+      {
+        "page": "https://settlegrid.xyz",
+        "snippet": "SettleGrid relays solver intents to settlement with single-block finality guarantees.",
+        "relevance": "medium"
+      }
+    ]
+  },
+  "team": {
+    "founders": [
+      {
+        "name": "Jonas Reinholt",
+        "role": "Co-founder",
+        "bioSnippet": "ex-Wintermute settlement infra"
+      }
+    ]
+  },
+  "rawContent": {
+    "websiteMarkdown": {
+      "https://settlegrid.xyz": "# SettleGrid\nIntent-based settlement rails. Pre-seed backed. Hiring protocol engineers."
+    },
+    "sourceTweets": []
+  }
+}
