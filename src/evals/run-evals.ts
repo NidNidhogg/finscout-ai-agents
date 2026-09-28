@@ -14,7 +14,9 @@
  * Requires: GEMINI_API_KEY. External tools are stubbed from each fixture's
  * rawContent — no FIRECRAWL_API_KEY or X_BEARER_TOKEN needed.
  * Env: EVAL_DB_PATH (default data/evals-queue.db, reset each run),
- *      GEMINI_MODEL, EVAL_MIN_SCORE (default 0.9).
+ *      GEMINI_MODEL, EVAL_MIN_SCORE (default 0.9),
+ *      EVAL_LIVE_TOOLS=1 — also run live-*.json fixtures against the real
+ *      Firecrawl/X APIs (needs FIRECRAWL_API_KEY + X_BEARER_TOKEN).
  */
 
 import 'dotenv/config';
@@ -36,6 +38,8 @@ const GOLDEN_DIR = path.join(__dirname, 'golden');
 const REPORT_PATH = 'data/evals-report.json';
 const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-2.5-flash';
 const MIN_SCORE = Number(process.env['EVAL_MIN_SCORE'] ?? '0.9');
+// Fixtures named live-*.json run against real Firecrawl/X (skipped otherwise).
+const LIVE_TOOLS = process.env['EVAL_LIVE_TOOLS'] === '1';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -108,6 +112,11 @@ async function main(): Promise<void> {
   const results: EvalResult[] = [];
 
   for (const { file, profile } of fixtures) {
+    const live = file.startsWith('live-');
+    if (live && !LIVE_TOOLS) {
+      console.log(`  ⊘ ${profile.company.name} [live]… skipped (set EVAL_LIVE_TOOLS=1 to run)`);
+      continue;
+    }
     db.prepare(
       `INSERT INTO queue_items (id, profile_json, status, enqueued_at)
        VALUES (?, ?, 'reviewed', ?)`,
@@ -126,14 +135,21 @@ async function main(): Promise<void> {
     try {
       // Fixture tools serve the golden profile's own rawContent — the LLM and
       // harness stay live; only external I/O is stubbed for determinism.
+      // live-* fixtures skip the stubs and hit real Firecrawl/X.
+      if (live && (!process.env['FIRECRAWL_API_KEY'] || !process.env['X_BEARER_TOKEN'])) {
+        console.log('SKIP  live fixture needs FIRECRAWL_API_KEY + X_BEARER_TOKEN');
+        continue;
+      }
       const harness = new AgentExecutionHarness({
         db,
         geminiApiKey,
         firecrawlApiKey: process.env['FIRECRAWL_API_KEY'] ?? '',
         xBearerToken: process.env['X_BEARER_TOKEN'] ?? '',
         model: MODEL,
-        pageFetcher: new FixturePageFetcher(profile),
-        xApiClient: new FixtureXApiClient(profile),
+        ...(live ? {} : {
+          pageFetcher: new FixturePageFetcher(profile),
+          xApiClient: new FixtureXApiClient(profile),
+        }),
       });
       const record = await harness.run(profile.id, context);
       const body = record.draftBody ?? '';
