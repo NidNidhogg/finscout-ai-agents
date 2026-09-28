@@ -1,16 +1,17 @@
 import { randomUUID, createHash } from 'crypto';
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
-import type { Content, FunctionCall, FunctionDeclarationsTool, GenerativeModel } from '@google/generative-ai';
+import { GoogleGenAI, Type } from '@google/genai';
+import type { Content, FunctionCall, Tool } from '@google/genai';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { FirecrawlFetcher } from '../enrichment/website/FirecrawlFetcher';
 import { ConcreteXApiClient } from '../enrichment/x-signal/ConcreteXApiClient';
 import { EnrichedProfileSchema } from '../schema/enrichedProfile';
 import type { EnrichedProfile } from '../schema/enrichedProfile';
+import { estimateCostUsd } from '../config/model-pricing';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = 'gemini-2.0-flash';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 const DEFAULT_MAX_ITERATIONS = 8;
 const DEFAULT_MAX_TOOL_REPEATS = 2;
 const NAME_ONLY_BACKSTOP = 5;
@@ -68,17 +69,17 @@ NO_SIGNALS_FOUND`;
 
 // ── Gemini tool declarations ───────────────────────────────────────────────────
 
-const HARNESS_TOOLS: FunctionDeclarationsTool = {
+const HARNESS_TOOLS: Tool = {
   functionDeclarations: [
     {
       name: 'crawl_website',
       description:
         'Scrape a URL and return the page content as markdown. Use to discover tech stack, architecture patterns, and product signals.',
       parameters: {
-        type: SchemaType.OBJECT,
+        type: Type.OBJECT,
         properties: {
           url: {
-            type: SchemaType.STRING,
+            type: Type.STRING,
             description: 'Absolute HTTP/S URL to scrape.',
           },
         },
@@ -90,14 +91,14 @@ const HARNESS_TOOLS: FunctionDeclarationsTool = {
       description:
         'Search recent X (Twitter) posts. Use to find technical announcements from the target company handle.',
       parameters: {
-        type: SchemaType.OBJECT,
+        type: Type.OBJECT,
         properties: {
           query: {
-            type: SchemaType.STRING,
+            type: Type.STRING,
             description: 'X search query string.',
           },
           maxResults: {
-            type: SchemaType.INTEGER,
+            type: Type.INTEGER,
             description: 'Number of tweets to return. Between 5 and 10. Defaults to 10.',
           },
         },
@@ -133,6 +134,9 @@ export interface AgentRunRecord {
   draftSubject: string | null;
   draftBody: string | null;
   errorMessage: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
 }
 
 export interface RunContext {
@@ -181,11 +185,19 @@ interface AgentRunRow {
   draft_subject: string | null;
   draft_body: string | null;
   error_message: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+}
+
+interface UsageTotals {
+  inputTokens: number;
+  outputTokens: number;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-function hashArgs(args: object): string {
+function hashArgs(args: object | undefined): string {
   return createHash('sha256').update(JSON.stringify(args)).digest('hex').slice(0, 12);
 }
 
@@ -271,7 +283,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 export class AgentExecutionHarness {
   private readonly db: Database.Database;
-  private readonly genAI: GoogleGenerativeAI;
+  private readonly ai: GoogleGenAI;
   private readonly firecrawl: FirecrawlFetcher;
   private readonly xClient: ConcreteXApiClient;
   private readonly model: string;
@@ -280,7 +292,7 @@ export class AgentExecutionHarness {
 
   constructor(config: AgentHarnessConfig) {
     this.db = config.db;
-    this.genAI = new GoogleGenerativeAI(config.geminiApiKey);
+    this.ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
     this.firecrawl = new FirecrawlFetcher({ apiKey: config.firecrawlApiKey });
     this.xClient = new ConcreteXApiClient({ bearerToken: config.xBearerToken });
     this.model = config.model ?? DEFAULT_MODEL;
@@ -326,9 +338,25 @@ export class AgentExecutionHarness {
         draft_subject   TEXT,
         draft_body      TEXT,
         error_message   TEXT,
+        input_tokens    INTEGER NOT NULL DEFAULT 0,
+        output_tokens   INTEGER NOT NULL DEFAULT 0,
+        cost_usd        REAL NOT NULL DEFAULT 0,
         FOREIGN KEY (queue_item_id) REFERENCES queue_items(id)
       )
     `);
+
+    const cols = this.db
+      .prepare<[], { name: string }>('PRAGMA table_info(agent_runs)')
+      .all()
+      .map((c) => c.name);
+    const colMigrations: Record<string, string> = {
+      input_tokens: 'ALTER TABLE agent_runs ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0',
+      output_tokens: 'ALTER TABLE agent_runs ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0',
+      cost_usd: 'ALTER TABLE agent_runs ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0',
+    };
+    for (const [col, ddl] of Object.entries(colMigrations)) {
+      if (!cols.includes(col)) this.db.exec(ddl);
+    }
   }
 
   async run(queueItemId: string, context: RunContext): Promise<AgentRunRecord> {
@@ -372,7 +400,9 @@ export class AgentExecutionHarness {
         },
       ];
 
-      const draft = await this.executeLoop(runId, initialHistory);
+      const usage: UsageTotals = { inputTokens: 0, outputTokens: 0 };
+      const draft = await this.executeLoop(runId, initialHistory, usage);
+      this.persistUsage(runId, usage);
       const completedAt = new Date().toISOString();
 
       // Preserve 'budget_exhausted' status set by finalizeBudgetExhausted — don't overwrite with 'completed'
@@ -436,7 +466,9 @@ export class AgentExecutionHarness {
     }
 
     try {
-      const draft = await this.executeLoop(runRow.id, history);
+      const usage: UsageTotals = { inputTokens: 0, outputTokens: 0 };
+      const draft = await this.executeLoop(runRow.id, history, usage);
+      this.persistUsage(runRow.id, usage);
       const completedAt = new Date().toISOString();
       this.db
         .prepare<[string, string | null, string, string], void>(
@@ -462,12 +494,23 @@ export class AgentExecutionHarness {
     return this.loadRecord(runRow.id);
   }
 
-  private async executeLoop(runId: string, history: Content[]): Promise<ParsedDraft> {
-    const geminiModel = this.genAI.getGenerativeModel({
-      model: this.model,
-      systemInstruction: SYSTEM_INSTRUCTION,
-      tools: [HARNESS_TOOLS],
-    });
+  private async executeLoop(
+    runId: string,
+    history: Content[],
+    usage: UsageTotals,
+  ): Promise<ParsedDraft> {
+    const generate = (): Promise<import('@google/genai').GenerateContentResponse> =>
+      withTimeout(
+        this.ai.models.generateContent({
+          model: this.model,
+          contents: history,
+          config: {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            tools: [HARNESS_TOOLS],
+          },
+        }),
+        ITERATION_TIMEOUT_MS,
+      );
 
     const argCountMap = new Map<string, number>();
     const nameCountMap = new Map<string, number>();
@@ -482,27 +525,25 @@ export class AgentExecutionHarness {
         )
         .run(iterationCount, JSON.stringify(history), runId);
 
-      const result = await withTimeout(
-        geminiModel.generateContent({ contents: history }),
-        ITERATION_TIMEOUT_MS,
-      );
-      const response = result.response;
+      const response = await generate();
+      usage.inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
+      usage.outputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;
       const candidate = response.candidates?.[0];
-      if (!candidate) throw new Error('Gemini returned no candidates');
+      if (!candidate?.content) throw new Error('Gemini returned no candidates');
 
       history.push(candidate.content);
 
-      const functionCalls = response.functionCalls();
+      const functionCalls = response.functionCalls;
 
       if (!functionCalls || functionCalls.length === 0) {
         this.db
           .prepare<[string, string], void>('UPDATE agent_runs SET history_json = ? WHERE id = ?')
           .run(JSON.stringify(history), runId);
-        return parseDraft(response.text());
+        return parseDraft(response.text ?? '');
       }
 
       if (this.exceedsRepeatLimits(functionCalls, argCountMap, nameCountMap)) {
-        return this.finalizeBudgetExhausted(runId, geminiModel, history, 'repeat_limit');
+        return this.finalizeBudgetExhausted(runId, history, 'repeat_limit', usage);
       }
 
       const toolResults = await Promise.allSettled(
@@ -511,7 +552,7 @@ export class AgentExecutionHarness {
 
       const functionResponseParts = toolResults.map((settled, i) => ({
         functionResponse: {
-          name: functionCalls[i]!.name,
+          name: functionCalls[i]!.name ?? '',
           response:
             settled.status === 'fulfilled'
               ? settled.value
@@ -524,7 +565,7 @@ export class AgentExecutionHarness {
         },
       }));
 
-      history.push({ role: 'function', parts: functionResponseParts });
+      history.push({ role: 'user', parts: functionResponseParts });
 
       // Persist after tool results — must happen before next generateContent call
       this.db
@@ -532,14 +573,14 @@ export class AgentExecutionHarness {
         .run(JSON.stringify(history), runId);
     }
 
-    return this.finalizeBudgetExhausted(runId, geminiModel, history, 'iteration_limit');
+    return this.finalizeBudgetExhausted(runId, history, 'iteration_limit', usage);
   }
 
   private async finalizeBudgetExhausted(
     runId: string,
-    geminiModel: GenerativeModel,
     history: Content[],
     reason: 'iteration_limit' | 'repeat_limit',
+    usage: UsageTotals,
   ): Promise<ParsedDraft> {
     const budgetMessage =
       reason === 'repeat_limit'
@@ -554,19 +595,28 @@ export class AgentExecutionHarness {
       )
       .run(JSON.stringify(history), runId);
 
-    const result = await withTimeout(
-      geminiModel.generateContent({ contents: history }),
+    const response = await withTimeout(
+      this.ai.models.generateContent({
+        model: this.model,
+        contents: history,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION,
+          tools: [HARNESS_TOOLS],
+        },
+      }),
       ITERATION_TIMEOUT_MS,
     );
-    const candidate = result.response.candidates?.[0];
-    if (candidate) {
+    usage.inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
+    usage.outputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;
+    const candidate = response.candidates?.[0];
+    if (candidate?.content) {
       history.push(candidate.content);
       this.db
         .prepare<[string, string], void>('UPDATE agent_runs SET history_json = ? WHERE id = ?')
         .run(JSON.stringify(history), runId);
     }
 
-    return parseDraft(result.response.text());
+    return parseDraft(response.text ?? '');
   }
 
   private exceedsRepeatLimits(
@@ -575,12 +625,13 @@ export class AgentExecutionHarness {
     nameCountMap: Map<string, number>,
   ): boolean {
     for (const call of calls) {
-      const key = `${call.name}:${hashArgs(call.args)}`;
+      const callName = call.name ?? '';
+      const key = `${callName}:${hashArgs(call.args)}`;
       const argCount = (argCountMap.get(key) ?? 0) + 1;
       argCountMap.set(key, argCount);
 
-      const nameCount = (nameCountMap.get(call.name) ?? 0) + 1;
-      nameCountMap.set(call.name, nameCount);
+      const nameCount = (nameCountMap.get(callName) ?? 0) + 1;
+      nameCountMap.set(callName, nameCount);
 
       if (argCount > this.maxToolRepeats || nameCount > NAME_ONLY_BACKSTOP) {
         return true;
@@ -589,9 +640,23 @@ export class AgentExecutionHarness {
     return false;
   }
 
-  private async dispatchTool(call: FunctionCall): Promise<object> {
+  private persistUsage(runId: string, usage: UsageTotals): void {
+    this.db
+      .prepare<[number, number, number, string], void>(
+        'UPDATE agent_runs SET input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?',
+      )
+      .run(
+        usage.inputTokens,
+        usage.outputTokens,
+        estimateCostUsd(this.model, usage.inputTokens, usage.outputTokens),
+        runId,
+      );
+  }
+
+  private async dispatchTool(call: FunctionCall): Promise<Record<string, unknown>> {
+    const callArgs = call.args ?? {};
     if (call.name === 'crawl_website') {
-      const input = CrawlWebsiteInputSchema.parse(call.args);
+      const input = CrawlWebsiteInputSchema.parse(callArgs);
       try {
         const page = await this.firecrawl.fetch(input.url);
         const originalLen = page.markdown.length;
@@ -615,7 +680,7 @@ export class AgentExecutionHarness {
     }
 
     if (call.name === 'search_x_tweets') {
-      const input = SearchXTweetsInputSchema.parse(call.args);
+      const input = SearchXTweetsInputSchema.parse(callArgs);
       try {
         const tweets = await this.xClient.searchRecentTweets({
           query: input.query,
@@ -748,6 +813,9 @@ Value Drop angle: ${context.valueDrop}${leverageBlock}`;
       draftSubject: row.draft_subject,
       draftBody: row.draft_body,
       errorMessage: row.error_message,
+      inputTokens: row.input_tokens ?? 0,
+      outputTokens: row.output_tokens ?? 0,
+      costUsd: row.cost_usd ?? 0,
     };
   }
 }

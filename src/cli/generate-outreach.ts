@@ -18,12 +18,13 @@ import Database from 'better-sqlite3';
 import { EnrichedProfileSchema, ReviewAnnotationSchema } from '../schema/enrichedProfile';
 import { AgentExecutionHarness, NO_SIGNALS_SENTINEL } from '../agent/AgentExecutionHarness';
 import type { RunContext } from '../agent/AgentExecutionHarness';
+import { lintDraft } from '../services/draft-linter';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const DB_PATH = process.env['REVIEW_DB_PATH'] ?? 'data/review-queue.db';
 const EXPORTS_DIR = 'data/exports';
-const MODEL = 'gemini-2.0-flash';
+const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-2.5-flash';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -42,6 +43,21 @@ interface EmailDraft {
   subject: string;
   body: string;
   budgetExhausted: boolean;
+  lintScore: number;
+  lintViolations: string[];
+}
+
+// ── queue_items column migration ──────────────────────────────────────────────
+
+function ensureDraftLintColumns(db: Database.Database): void {
+  const cols = (db.prepare('PRAGMA table_info(queue_items)').all() as { name: string }[])
+    .map((c) => c.name);
+  if (!cols.includes('draft_score')) {
+    db.exec('ALTER TABLE queue_items ADD COLUMN draft_score REAL');
+  }
+  if (!cols.includes('draft_violations_json')) {
+    db.exec('ALTER TABLE queue_items ADD COLUMN draft_violations_json TEXT');
+  }
 }
 
 // ── Source routing ────────────────────────────────────────────────────────────
@@ -154,6 +170,12 @@ function renderMarkdown(drafts: EmailDraft[], generatedAt: string): string {
     if (d.budgetExhausted) {
       lines.push('> **Note:** Draft produced via fallback after iteration budget exhausted.', '');
     }
+    if (d.lintViolations.length > 0) {
+      lines.push(
+        `> **Lint score ${d.lintScore.toFixed(2)}** — ${d.lintViolations.join(' · ')}`,
+        '',
+      );
+    }
     lines.push(`**Subject:** \`${d.subject}\``, '', '```', d.body, '```', '', '---', '');
     return lines.join('\n');
   });
@@ -183,6 +205,7 @@ async function main(): Promise<void> {
   }
 
   const db = new Database(DB_PATH);
+  ensureDraftLintColumns(db);
 
   const harness = new AgentExecutionHarness({
     db,
@@ -208,6 +231,9 @@ async function main(): Promise<void> {
   const drafts: EmailDraft[] = [];
   let discarded = 0;
   let failed = 0;
+  let totalCostUsd = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   for (const row of rows) {
     const profile = EnrichedProfileSchema.parse(JSON.parse(row.profile_json));
@@ -251,6 +277,13 @@ async function main(): Promise<void> {
         console.log('agent found no signals → discarded');
         discarded++;
       } else {
+        const lint = lintDraft(
+          { subject: record.draftSubject ?? '', body: record.draftBody ?? '' },
+          profile,
+        );
+        db.prepare<[number, string, string], void>(
+          'UPDATE queue_items SET draft_score = ?, draft_violations_json = ? WHERE id = ?',
+        ).run(lint.score, JSON.stringify(lint.violations), row.id);
         drafts.push({
           profileId: row.id,
           companyName: profile.company.name,
@@ -260,10 +293,23 @@ async function main(): Promise<void> {
           subject: record.draftSubject ?? '(no subject)',
           body: record.draftBody ?? '',
           budgetExhausted: record.status === 'budget_exhausted',
+          lintScore: lint.score,
+          lintViolations: lint.violations.map((v) => `${v.rule}: ${v.detail}`),
         });
         const budgetNote =
           record.status === 'budget_exhausted' ? ` [budget_exhausted @ iter ${record.iterationCount}]` : '';
-        console.log(`done (${record.iterationCount} iteration(s)${budgetNote})`);
+        totalCostUsd += record.costUsd;
+        totalInputTokens += record.inputTokens;
+        totalOutputTokens += record.outputTokens;
+        console.log(
+          `done (${record.iterationCount} iteration(s)${budgetNote}` +
+          ` · cost $${record.costUsd.toFixed(4)} · ${record.inputTokens}+${record.outputTokens} tok)`,
+        );
+        if (lint.violations.length > 0) {
+          console.log(
+            `     ⚠ lint score ${lint.score.toFixed(2)}: ${lint.violations.map((v) => v.rule).join(', ')}`,
+          );
+        }
       }
     } catch (err: unknown) {
       console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
@@ -285,6 +331,13 @@ async function main(): Promise<void> {
   fs.writeFileSync(outPath, renderMarkdown(drafts, ts), 'utf-8');
 
   console.log(`\n[generate-outreach] ${drafts.length} draft(s) written → ${outPath}`);
+  if (totalCostUsd > 0) {
+    const perLead = drafts.length > 0 ? totalCostUsd / drafts.length : 0;
+    console.log(
+      `[generate-outreach] LLM cost: $${totalCostUsd.toFixed(4)} total` +
+      ` ($${perLead.toFixed(4)}/draft · ${totalInputTokens}+${totalOutputTokens} tok)`,
+    );
+  }
   if (discarded > 0)
     console.log(`[generate-outreach] ${discarded} discarded (agent found no technical signals).`);
   if (failed > 0)

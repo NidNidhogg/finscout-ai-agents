@@ -10,16 +10,16 @@
 
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { FirecrawlFetcher } from '../../enrichment/website/FirecrawlFetcher';
 import { ConcreteXApiClient } from '../../enrichment/x-signal/ConcreteXApiClient';
 import { AgentExecutionHarness, NO_SIGNALS_SENTINEL } from '../AgentExecutionHarness';
 
 // ── Module mocks ───────────────────────────────────────────────────────────────
 
-jest.mock('@google/generative-ai', () => ({
-  GoogleGenerativeAI: jest.fn(),
-  SchemaType: {
+jest.mock('@google/genai', () => ({
+  GoogleGenAI: jest.fn(),
+  Type: {
     OBJECT: 'OBJECT',
     STRING: 'STRING',
     INTEGER: 'INTEGER',
@@ -117,23 +117,19 @@ function insertQueueItem(
 function makeTextResponse(text: string) {
   const content = { role: 'model', parts: [{ text }] };
   return {
-    response: {
-      candidates: [{ content }],
-      functionCalls: () => undefined,
-      text: () => text,
-    },
+    candidates: [{ content }],
+    functionCalls: undefined,
+    text,
   };
 }
 
 function makeFunctionCallResponse(name: string, args: object) {
   const content = { role: 'model', parts: [{ functionCall: { name, args } }] };
   return {
-    response: {
-      candidates: [{ content }],
-      functionCalls: () => [{ name, args }],
-      text: (): never => {
-        throw new Error('functionCalls response has no text');
-      },
+    candidates: [{ content }],
+    functionCalls: [{ name, args }],
+    get text(): never {
+      throw new Error('functionCalls response has no text');
     },
   };
 }
@@ -152,7 +148,7 @@ function makeHarness(db: Database.Database): AgentExecutionHarness {
 
 // ── Mock wiring ────────────────────────────────────────────────────────────────
 
-const MockGoogleGenerativeAI = GoogleGenerativeAI as jest.MockedClass<typeof GoogleGenerativeAI>;
+const MockGoogleGenAI = GoogleGenAI as jest.MockedClass<typeof GoogleGenAI>;
 const MockFirecrawlFetcher = FirecrawlFetcher as jest.MockedClass<typeof FirecrawlFetcher>;
 const MockConcreteXApiClient = ConcreteXApiClient as jest.MockedClass<typeof ConcreteXApiClient>;
 
@@ -161,10 +157,10 @@ let mockGenerateContent: jest.Mock;
 beforeEach(() => {
   jest.clearAllMocks();
   mockGenerateContent = jest.fn();
-  MockGoogleGenerativeAI.mockImplementation(
+  MockGoogleGenAI.mockImplementation(
     () =>
       ({
-        getGenerativeModel: jest.fn().mockReturnValue({ generateContent: mockGenerateContent }),
+        models: { generateContent: mockGenerateContent },
       }) as never,
   );
   MockFirecrawlFetcher.prototype.fetch = jest.fn();
@@ -214,7 +210,9 @@ describe('AgentExecutionHarness fault tolerance', () => {
         role: string;
         parts: unknown[];
       }>;
-      const functionResponseItem = secondCallContents.find((c) => c.role === 'function');
+      const functionResponseItem = secondCallContents.find((c) =>
+        Array.isArray(c.parts) && c.parts.some((p) => (p as { functionResponse?: unknown }).functionResponse),
+      );
       expect(functionResponseItem).toBeDefined();
       expect(JSON.stringify(functionResponseItem)).toContain('"error"');
     });
@@ -289,7 +287,7 @@ describe('AgentExecutionHarness fault tolerance', () => {
           parts: [{ functionCall: { name: 'crawl_website', args: { url: 'https://example.com' } } }],
         },
         {
-          role: 'function',
+          role: 'user',
           parts: [
             {
               functionResponse: {
@@ -323,7 +321,7 @@ describe('AgentExecutionHarness fault tolerance', () => {
       // The call started from the 3-item checkpoint, not an empty or single-item history
       expect(capturedContents).toHaveLength(3);
       expect(capturedContents[0]).toMatchObject({ role: 'user' });
-      expect(capturedContents[2]).toMatchObject({ role: 'function' });
+      expect(capturedContents[2]).toMatchObject({ role: 'user' });
 
       // Queue item advances to 'drafted' after successful resume
       const qi = db
@@ -422,7 +420,9 @@ describe('AgentExecutionHarness fault tolerance', () => {
         role: string;
         parts: unknown[];
       }>;
-      const functionResponseItem = secondCallContents.find((c) => c.role === 'function');
+      const functionResponseItem = secondCallContents.find((c) =>
+        Array.isArray(c.parts) && c.parts.some((p) => (p as { functionResponse?: unknown }).functionResponse),
+      );
       expect(functionResponseItem).toBeDefined();
       // Zod error message is propagated as { error: '...' } in the response
       expect(JSON.stringify(functionResponseItem)).toContain('"error"');
