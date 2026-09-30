@@ -27,7 +27,7 @@ import type { IcpTier } from '../sales-factory/scoreProfile';
 
 const DB_PATH = process.env['REVIEW_DB_PATH'] ?? 'data/review-queue.db';
 const SYSTEM_REVIEWER = 'system:enrich-pending';
-const FOUNDER_MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-2.5-flash';
+const FOUNDER_MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-3.8-flash';
 // Same cap as AgentExecutionHarness — keeps Gemini token cost predictable.
 const FOUNDER_MARKDOWN_CAP = 8_000;
 

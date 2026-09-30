@@ -1,0 +1,52 @@
+{
+  "id": "fe4ea548-7f22-4c13-bf66-b22b07df5f40",
+  "enrichedAt": "2026-09-28T08:44:34.643Z",
+  "schemaVersion": "1.0.0",
+  "painHypothesis": "cross-chain settlement latency",
+  "sources": {
+    "websiteCrawl": {
+      "lastFetched": "2026-09-28T08:45:03.750Z",
+      "pagesCrawled": [
+        "https://www.echo-protocol.xyz"
+      ],
+      "fetcher": "firecrawl"
+    }
+  },
+  "company": {
+    "name": "Echo Bridge",
+    "normalizedName": "echo-bridge",
+    "websiteUrl": "https://www.echo-protocol.xyz",
+    "xHandle": "@EchoProtocol_"
+  },
+  "funding": {
+    "claimed": {
+      "rawText": "DefiLlama TVL: $99.1M"
+    }
+  },
+  "product": {
+    "selfClaimedCategory": "Bridge",
+    "stackMentions": [
+      "Solana",
+      "Go"
+    ],
+    "architectureTerms": [
+      "bridge",
+      "cross-chain",
+      "settlement",
+      "tvl",
+      "yield",
+      "liquidity",
+      "vault"
+    ],
+    "antiSignalTerms": [],
+    "competencyCellMatches": [],
+    "evidence": []
+  },
+  "team": {
+    "founders": []
+  },
+  "rawContent": {
+    "websiteMarkdown": {},
+    "sourceTweets": []
+  }
+}
