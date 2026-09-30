@@ -36,7 +36,7 @@ import { FixturePageFetcher, FixtureXApiClient } from './stub-tools';
 const DB_PATH = process.env['EVAL_DB_PATH'] ?? 'data/evals-queue.db';
 const GOLDEN_DIR = path.join(__dirname, 'golden');
 const REPORT_PATH = 'data/evals-report.json';
-const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-2.5-flash';
+const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-3.8-flash';
 const MIN_SCORE = Number(process.env['EVAL_MIN_SCORE'] ?? '0.9');
 // Fixtures named live-*.json run against real Firecrawl/X (skipped otherwise).
 const LIVE_TOOLS = process.env['EVAL_LIVE_TOOLS'] === '1';

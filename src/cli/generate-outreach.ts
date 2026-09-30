@@ -25,7 +25,7 @@ import { detectSource, FRAMEWORK_BY_SOURCE, SOURCE_ANGLE } from '../services/sou
 
 const DB_PATH = process.env['REVIEW_DB_PATH'] ?? 'data/review-queue.db';
 const EXPORTS_DIR = 'data/exports';
-const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-2.5-flash';
+const MODEL = process.env['GEMINI_MODEL'] ?? 'gemini-3.8-flash';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

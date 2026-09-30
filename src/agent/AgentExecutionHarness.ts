@@ -13,7 +13,7 @@ import { estimateCostUsd } from '../config/model-pricing';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-3.8-flash';
 const DEFAULT_MAX_ITERATIONS = 8;
 const DEFAULT_MAX_TOOL_REPEATS = 2;
 const NAME_ONLY_BACKSTOP = 5;
